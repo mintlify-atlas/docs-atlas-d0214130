@@ -1,0 +1,408 @@
+---
+title: ICE Renomination
+description: Dynamically switch between candidate pairs for connection migration and improved connectivity
+---
+
+Renomination allows the controlling ICE agent to nominate a different candidate pair after the initial nomination, enabling seamless connection migration in response to network changes or quality degradation.
+
+## Overview
+
+Standard ICE nominates a single candidate pair for data transmission. Once nominated, switching to a different pair requires restarting the ICE process. **Renomination** extends ICE by allowing the controlling agent to nominate a new pair at any time, supporting scenarios like:
+
+- Network handoff (WiFi to cellular)
+- Quality-based path switching (higher RTT → lower RTT path)
+- Connection recovery after network issues
+- Adaptive routing based on real-time metrics
+
+<Info>
+Renomination follows the draft specification [draft-thatcher-ice-renomination-01](https://tools.ietf.org/html/draft-thatcher-ice-renomination-01).
+</Info>
+
+## Enabling Renomination
+
+Renomination requires a nomination value generator function:
+
+```go
+import "github.com/pion/ice/v4"
+
+// Using the default incrementing generator
+agent, err := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+)
+```
+
+### Custom Nomination Generator
+
+Provide your own generator for custom nomination strategies:
+
+```go
+counter := uint32(0)
+agent, err := ice.NewAgentWithOptions(
+    ice.WithRenomination(func() uint32 {
+        counter++
+        return counter
+    }),
+)
+```
+
+<Warning>
+The nomination value **must increase** with each renomination. The controlled agent rejects nominations with values less than or equal to previously seen values.
+</Warning>
+
+## Nomination Attribute
+
+Renomination adds a custom STUN attribute to binding requests:
+
+```go renomination.go
+type NominationAttribute struct {
+    Value uint32  // 24-bit nomination value
+}
+
+const (
+    // DefaultNominationAttribute is the default STUN attribute type
+    DefaultNominationAttribute stun.AttrType = 0x0030
+)
+```
+
+The attribute is automatically included in nomination requests when renomination is enabled:
+
+```go
+// Add nomination attribute to STUN message
+attr := ice.Nomination(nominationValue)
+err := attr.AddTo(stunMessage)
+```
+
+### Custom Attribute Type
+
+If the default attribute type conflicts with your setup, configure a custom one:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+    ice.WithNominationAttribute(0x0042), // Custom attribute type
+)
+```
+
+<Note>
+The nomination attribute value is a 24-bit integer (0 to 16,777,215). Values are truncated to 24 bits if larger.
+</Note>
+
+## Performing Renomination
+
+Only the **controlling agent** can trigger renomination:
+
+```go
+// Get local and remote candidates
+localCandidate := // ... your local candidate
+remoteCandidate := // ... your remote candidate
+
+// Renominate this candidate pair
+err := agent.RenominateCandidate(localCandidate, remoteCandidate)
+if err != nil {
+    // Handle error (e.g., not controlling, renomination disabled, pair not found)
+}
+```
+
+### Requirements
+
+1. **Controlling role**: Only controlling agents can renominate
+2. **Renomination enabled**: Agent must be created with `WithRenomination()`
+3. **Valid pair**: Candidate pair must exist in the agent's checklist
+4. **Succeeded state**: Pair should be in `CandidatePairStateSucceeded` state
+
+```go
+// Check if agent can renominate
+if !agent.IsControlling() {
+    return errors.New("only controlling agent can renominate")
+}
+```
+
+## Controlled Agent Behavior
+
+The controlled agent automatically handles incoming renominations:
+
+```go selector.go
+func (s *controlledSelector) shouldAcceptNomination(nomination *uint32) bool {
+    // No nomination value = standard ICE, always accept
+    if nomination == nil {
+        return true
+    }
+    
+    // First nomination with value
+    if s.lastNomination == nil {
+        s.lastNomination = nomination
+        return true
+    }
+    
+    // Accept only if new value is higher ("last nomination wins")
+    if *nomination > *s.lastNomination {
+        s.lastNomination = nomination
+        return true
+    }
+    
+    return false
+}
+```
+
+<Info>
+The controlled agent applies "last nomination wins" logic **regardless** of whether it has local renomination enabled. This ensures compatibility when the controlling agent uses renomination.
+</Info>
+
+## Connection Migration Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+    
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create controlling agent with renomination
+    agent, err := ice.NewAgentWithOptions(
+        ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer agent.Close()
+    
+    // ... perform ICE and establish connection ...
+    
+    // Monitor connection quality
+    go func() {
+        ticker := time.NewTicker(5 * time.Second)
+        defer ticker.Stop()
+        
+        for range ticker.C {
+            stats, ok := agent.GetSelectedCandidatePairStats()
+            if !ok {
+                continue
+            }
+            
+            // Check if RTT is too high
+            if stats.CurrentRoundTripTime > 0.2 { // 200ms
+                fmt.Println("High RTT detected, checking for better path...")
+                
+                // Find alternative candidate pair with better RTT
+                betterPair := findBetterCandidatePair(agent)
+                if betterPair != nil {
+                    // Renominate the better pair
+                    err := agent.RenominateCandidate(
+                        betterPair.Local,
+                        betterPair.Remote,
+                    )
+                    if err != nil {
+                        fmt.Printf("Renomination failed: %v\n", err)
+                    } else {
+                        fmt.Println("Successfully renominated to better path")
+                    }
+                }
+            }
+        }
+    }()
+    
+    // ... continue with application ...
+}
+
+func findBetterCandidatePair(agent *ice.Agent) *CandidatePairInfo {
+    // Implementation: iterate through candidate pairs,
+    // compare RTT, candidate types, and other metrics
+    // Return the best alternative pair
+    return nil
+}
+```
+
+## Network Handoff Scenario
+
+```go
+// Monitoring network interface changes
+func handleNetworkChange(agent *ice.Agent, newInterface string) error {
+    // Gather new candidates on the new interface
+    err := agent.GatherCandidates()
+    if err != nil {
+        return err
+    }
+    
+    // Wait for new candidates
+    time.Sleep(2 * time.Second)
+    
+    // Find candidate pair using the new interface
+    pairs := agent.GetCandidatePairsStats()
+    for _, pair := range pairs {
+        if pair.State == ice.CandidatePairStateSucceeded {
+            localCand := getLocalCandidate(agent, pair.LocalCandidateID)
+            if isOnInterface(localCand, newInterface) {
+                // Renominate to use new interface
+                remoteCand := getRemoteCandidate(agent, pair.RemoteCandidateID)
+                return agent.RenominateCandidate(localCand, remoteCand)
+            }
+        }
+    }
+    
+    return fmt.Errorf("no suitable candidate on new interface")
+}
+```
+
+## Testing Renomination
+
+From the test suite (`renomination_test.go`):
+
+```go
+func TestControlledSelectorNominationAcceptance(t *testing.T) {
+    agent, err := ice.NewAgentWithOptions(
+        ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+    )
+    // ...
+    
+    selector := &controlledSelector{
+        agent: agent,
+        log:   agent.log,
+    }
+    selector.Start()
+    
+    // First nomination should be accepted
+    nomination1 := uint32(5)
+    assert.True(t, selector.shouldAcceptNomination(&nomination1))
+    
+    // Higher nomination should be accepted
+    nomination2 := uint32(10)
+    assert.True(t, selector.shouldAcceptNomination(&nomination2))
+    
+    // Lower nomination should be rejected
+    nomination3 := uint32(7)
+    assert.False(t, selector.shouldAcceptNomination(&nomination3))
+    
+    // Nil nomination should be accepted (standard ICE)
+    assert.True(t, selector.shouldAcceptNomination(nil))
+}
+```
+
+## STUN Message Structure
+
+A renomination request includes:
+
+```
+STUN Binding Request
+├── USE-CANDIDATE attribute (standard ICE)
+├── NOMINATION attribute (value: incrementing counter)
+├── PRIORITY attribute
+├── ICE-CONTROLLING attribute
+├── USERNAME attribute
+├── MESSAGE-INTEGRITY attribute
+└── FINGERPRINT attribute
+```
+
+Verifying nomination attribute in captured packets:
+
+```go
+msg := &stun.Message{}
+err := msg.UnmarshalBinary(capturedPacket)
+
+// Check for USE-CANDIDATE
+if !msg.Contains(stun.AttrUseCandidate) {
+    // Not a nomination
+}
+
+// Extract nomination value
+var nomination ice.NominationAttribute
+err = nomination.GetFrom(msg)
+if err == nil {
+    fmt.Printf("Nomination value: %d\n", nomination.Value)
+} else {
+    // Standard ICE nomination (no value)
+}
+```
+
+## Error Handling
+
+```go
+err := agent.RenominateCandidate(local, remote)
+
+switch {
+case errors.Is(err, ice.ErrRenominationNotEnabled):
+    // Agent was not created with WithRenomination()
+    
+case errors.Is(err, ice.ErrNotControlling):
+    // Only controlling agent can renominate
+    
+case errors.Is(err, ice.ErrCandidatePairNotFound):
+    // Candidate pair doesn't exist in checklist
+    
+case err != nil:
+    // Other error (e.g., STUN message build failure)
+}
+```
+
+<Tip>
+Always verify the agent is controlling before attempting renomination. The `IsControlling()` method provides the current role.
+</Tip>
+
+## Best Practices
+
+<Accordion title="Nomination Value Strategy">
+  Use a monotonically increasing counter. The default generator works for most cases:
+  
+  ```go
+  agent, err := ice.NewAgentWithOptions(
+      ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+  )
+  ```
+  
+  For advanced scenarios, consider timestamp-based values:
+  ```go
+  ice.WithRenomination(func() uint32 {
+      return uint32(time.Now().Unix())
+  })
+  ```
+</Accordion>
+
+<Accordion title="When to Renominate">
+  Renominate based on measurable quality degradation:
+  - RTT increases beyond threshold
+  - Packet loss exceeds acceptable rate  
+  - New interface with better metrics becomes available
+  - Current path becomes unavailable
+  
+  Avoid renominating too frequently (thrashing). Implement hysteresis.
+</Accordion>
+
+<Accordion title="Monitoring for Renomination">
+  Use candidate pair statistics to make informed decisions:
+  
+  ```go
+  stats, ok := agent.GetSelectedCandidatePairStats()
+  if ok {
+      // CurrentRoundTripTime, PacketsLost, BytesSent, etc.
+      if shouldRenominate(stats) {
+          // Find and renominate better pair
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="Compatibility">
+  Renomination is backward compatible with standard ICE:
+  - If remote peer doesn't support renomination, nominations work as standard ICE
+  - Controlled agents handle renomination even without local renomination enabled
+  - The NOMINATION attribute is optional; absence means standard ICE behavior
+</Accordion>
+
+## Limitations
+
+- **24-bit value space**: Maximum 16,777,215 renominations per session
+- **Controlling agent only**: Controlled agents cannot initiate renomination
+- **No rollback**: Cannot renominate to a pair with a lower value
+- **Draft specification**: Subject to change in future ICE specifications
+
+## Reference
+
+- **Nomination Attribute**: `renomination.go:22` - NominationAttribute type
+- **Renomination Method**: `agent.go` - RenominateCandidate function
+- **Controlled Selector**: `selector.go` - shouldAcceptNomination logic
+- **Test Patterns**: `renomination_test.go` - Comprehensive test examples
+- **Specification**: [draft-thatcher-ice-renomination-01](https://tools.ietf.org/html/draft-thatcher-ice-renomination-01)

@@ -1,0 +1,275 @@
+---
+title: 'URL Parsing'
+description: 'STUN and TURN URI parsing utilities'
+---
+
+## Overview
+
+<Warning>
+These types and functions are deprecated. Use the `pion/stun` package directly instead.
+</Warning>
+
+The Pion ICE library provides type aliases for STUN and TURN URI parsing from the `pion/stun/v3` package. These are maintained for backward compatibility.
+
+## Type Aliases
+
+### URL
+
+```go
+type URL = stun.URI
+```
+
+<Warning>
+Deprecated: Use `stun.URI` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Represents a STUN (RFC 7064) or TURN (RFC 7065) URI.
+
+### SchemeType
+
+```go
+type SchemeType = stun.SchemeType
+```
+
+<Warning>
+Deprecated: Use `stun.SchemeType` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Indicates the server type (STUN, STUNS, TURN, TURNS).
+
+### ProtoType
+
+```go
+type ProtoType = stun.ProtoType
+```
+
+<Warning>
+Deprecated: Use `stun.ProtoType` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Indicates the transport protocol (UDP, TCP).
+
+## Constants
+
+### Scheme Types
+
+```go
+const (
+    SchemeTypeSTUN  = stun.SchemeTypeSTUN   // "stun"
+    SchemeTypeSTUNS = stun.SchemeTypeSTUNS  // "stuns" (secure)
+    SchemeTypeTURN  = stun.SchemeTypeTURN   // "turn"
+    SchemeTypeTURNS = stun.SchemeTypeTURNS  // "turns" (secure)
+)
+```
+
+### Protocol Types
+
+```go
+const (
+    ProtoTypeUDP = stun.ProtoTypeUDP  // UDP transport
+    ProtoTypeTCP = stun.ProtoTypeTCP  // TCP transport
+)
+```
+
+### Unknown
+
+```go
+const Unknown = 0
+```
+
+Represents an unknown ProtoType or SchemeType.
+
+## Functions
+
+### ParseURL
+
+```go
+var ParseURL = stun.ParseURI
+```
+
+<Warning>
+Deprecated: Use `stun.ParseURI` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Parses a STUN or TURN URL following the ABNF syntax described in RFC 7064 and RFC 7065.
+
+**Signature:**
+```go
+func ParseURI(uri string) (*URI, error)
+```
+
+### NewSchemeType
+
+```go
+var NewSchemeType = stun.NewSchemeType
+```
+
+<Warning>
+Deprecated: Use `stun.NewSchemeType` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Creates a new SchemeType from a raw string.
+
+**Signature:**
+```go
+func NewSchemeType(scheme string) SchemeType
+```
+
+### NewProtoType
+
+```go
+var NewProtoType = stun.NewProtoType
+```
+
+<Warning>
+Deprecated: Use `stun.NewProtoType` from `github.com/pion/stun/v3` instead.
+</Warning>
+
+Creates a new ProtoType from a raw string.
+
+**Signature:**
+```go
+func NewProtoType(proto string) ProtoType
+```
+
+## Usage Examples
+
+<CodeGroup>
+```go Basic STUN URL
+import (
+    "github.com/pion/ice/v4"
+    "github.com/pion/stun/v3"
+)
+
+// Parse STUN URL (recommended: use stun.ParseURI directly)
+stunURL, err := stun.ParseURI("stun:stun.l.google.com:19302")
+if err != nil {
+    panic(err)
+}
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+)
+```
+
+```go TURN URL with Credentials
+// TURN server with UDP
+turnURL, err := stun.ParseURI("turn:turn.example.com:3478?transport=udp")
+if err != nil {
+    panic(err)
+}
+
+// Set credentials
+turnURL.Username = "user"
+turnURL.Password = "pass"
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{turnURL}),
+)
+```
+
+```go Multiple Servers
+stunURL1, _ := stun.ParseURI("stun:stun.l.google.com:19302")
+stunURL2, _ := stun.ParseURI("stun:stun1.l.google.com:19302")
+turnURL, _ := stun.ParseURI("turn:turn.example.com:3478")
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL1, stunURL2, turnURL}),
+)
+```
+
+```go Secure TURN (TURNS)
+// TURN over TLS
+turnsURL, err := stun.ParseURI("turns:turn.example.com:5349?transport=tcp")
+if err != nil {
+    panic(err)
+}
+
+turnsURL.Username = "user"
+turnsURL.Password = "pass"
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{turnsURL}),
+)
+```
+</CodeGroup>
+
+## URI Format
+
+### STUN URI
+
+```
+stun:<host>[:<port>]
+stuns:<host>[:<port>]
+```
+
+**Examples:**
+- `stun:stun.example.com`
+- `stun:stun.example.com:3478`
+- `stuns:stun.example.com:5349`
+
+### TURN URI
+
+```
+turn:<host>[:<port>][?transport=<udp|tcp>]
+turns:<host>[:<port>][?transport=<tcp>]
+```
+
+**Examples:**
+- `turn:turn.example.com:3478`
+- `turn:turn.example.com:3478?transport=udp`
+- `turn:turn.example.com:3478?transport=tcp`
+- `turns:turn.example.com:5349?transport=tcp`
+
+## Default Ports
+
+| Scheme | Default Port |
+|--------|-------------|
+| stun   | 3478 |
+| stuns  | 5349 |
+| turn   | 3478 |
+| turns  | 5349 |
+
+## URI Structure
+
+The `stun.URI` type has the following structure:
+
+```go
+type URI struct {
+    Scheme   SchemeType  // STUN, STUNS, TURN, TURNS
+    Host     string      // Hostname or IP address
+    Port     int         // Port number
+    Proto    ProtoType   // UDP or TCP
+    Username string      // TURN username (optional)
+    Password string      // TURN password (optional)
+}
+```
+
+## Migration Guide
+
+<CodeGroup>
+```go Before (Deprecated)
+import "github.com/pion/ice/v4"
+
+url, err := ice.ParseURL("stun:stun.example.com:3478")
+```
+
+```go After (Recommended)
+import "github.com/pion/stun/v3"
+
+uri, err := stun.ParseURI("stun:stun.example.com:3478")
+```
+</CodeGroup>
+
+## Related
+
+- [Agent](/api/agent) - ICE Agent that uses URLs
+- [Agent Options](/api/agent-options) - WithUrls configuration
+- [STUN Package](https://pkg.go.dev/github.com/pion/stun/v3) - Full STUN library documentation
+
+## External References
+
+- [RFC 7064](https://tools.ietf.org/html/rfc7064) - STUN URI Scheme
+- [RFC 7065](https://tools.ietf.org/html/rfc7065) - TURN URI Scheme
+- [RFC 5389](https://tools.ietf.org/html/rfc5389) - STUN Protocol
+- [RFC 5766](https://tools.ietf.org/html/rfc5766) - TURN Protocol

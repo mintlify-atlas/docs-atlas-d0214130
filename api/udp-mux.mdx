@@ -1,0 +1,362 @@
+---
+title: "UDP Mux"
+description: "UDP multiplexing for sharing a single UDP port across multiple ICE connections"
+---
+
+## Overview
+
+UDP Mux allows multiple ICE connections to share a single UDP port by demultiplexing packets based on the username fragment (ufrag) from STUN messages. This enables efficient port usage and is particularly useful when you need to handle multiple concurrent WebRTC connections.
+
+## UDPMux Interface
+
+The `UDPMux` interface defines the contract for UDP multiplexing implementations.
+
+```go
+type UDPMux interface {
+    io.Closer
+    GetConn(ufrag string, addr net.Addr) (net.PacketConn, error)
+    RemoveConnByUfrag(ufrag string)
+    GetListenAddresses() []net.Addr
+}
+```
+
+### Methods
+
+<ParamField path="GetConn" type="func(ufrag string, addr net.Addr) (net.PacketConn, error)">
+  Returns a `PacketConn` for the given username fragment and address. Creates a new connection if one doesn't exist for the specified ufrag.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment from the ICE credentials
+  - `addr` - The network address to bind to
+  
+  **Returns:** A `net.PacketConn` or an error if the connection cannot be created
+</ParamField>
+
+<ParamField path="RemoveConnByUfrag" type="func(ufrag string)">
+  Stops and removes the muxed packet connection associated with the given username fragment.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment identifying the connection to remove
+</ParamField>
+
+<ParamField path="GetListenAddresses" type="func() []net.Addr">
+  Returns the list of addresses that this mux is listening on.
+  
+  **Returns:** A slice of `net.Addr` representing all listening addresses
+</ParamField>
+
+<ParamField path="Close" type="func() error">
+  Closes the mux and all associated connections. No further connections can be created after closing.
+  
+  **Returns:** An error if the close operation fails
+</ParamField>
+
+## UDPMuxDefault
+
+`UDPMuxDefault` is the default implementation of the `UDPMux` interface.
+
+### Creating a UDPMuxDefault
+
+```go
+func NewUDPMuxDefault(params UDPMuxParams) *UDPMuxDefault
+```
+
+Creates a new UDP mux with the specified parameters.
+
+### UDPMuxParams
+
+<ParamField path="Logger" type="logging.LeveledLogger">
+  Logger instance for the mux. If nil, a default logger will be created.
+</ParamField>
+
+<ParamField path="UDPConn" type="net.PacketConn" required>
+  The UDP connection to multiplex. This should be bound to a specific address.
+</ParamField>
+
+<ParamField path="Net" type="transport.Net">
+  Network transport interface. Required when the UDPConn binds to an unspecified address.
+</ParamField>
+
+### Example: Basic UDP Mux
+
+<CodeGroup>
+```go Basic Usage
+package main
+
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create a UDP connection
+    udpAddr := &net.UDPAddr{
+        IP:   net.ParseIP("0.0.0.0"),
+        Port: 8443,
+    }
+    
+    conn, err := net.ListenUDP("udp", udpAddr)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create UDP mux
+    mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{
+        UDPConn: conn,
+    })
+    defer mux.Close()
+    
+    // Get a connection for a specific ufrag
+    packetConn, err := mux.GetConn("myufrag", conn.LocalAddr())
+    if err != nil {
+        panic(err)
+    }
+    
+    // Use packetConn for ICE agent...
+}
+```
+
+```go With Logger
+package main
+
+import (
+    "net"
+    "github.com/pion/ice/v4"
+    "github.com/pion/logging"
+)
+
+func main() {
+    conn, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8443})
+    
+    loggerFactory := logging.NewDefaultLoggerFactory()
+    logger := loggerFactory.NewLogger("ice-mux")
+    
+    mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{
+        UDPConn: conn,
+        Logger:  logger,
+    })
+    defer mux.Close()
+}
+```
+</CodeGroup>
+
+<Note>
+When using an unspecified address (0.0.0.0 or ::), the mux will automatically detect all local interfaces. However, it's recommended to use `NewMultiUDPMuxFromPort` instead for better control.
+</Note>
+
+## MultiUDPMuxDefault
+
+`MultiUDPMuxDefault` allows multiple `UDPMux` instances to be used together, enabling listening on multiple ports or addresses simultaneously.
+
+### Creating a MultiUDPMuxDefault
+
+```go
+func NewMultiUDPMuxDefault(muxes ...UDPMux) *MultiUDPMuxDefault
+```
+
+Creates a multi-mux from existing `UDPMux` instances.
+
+```go
+func NewMultiUDPMuxFromPort(port int, opts ...UDPMuxFromPortOption) (*MultiUDPMuxDefault, error)
+```
+
+Creates a multi-mux that listens on all network interfaces on the specified port.
+
+### Configuration Options
+
+<ParamField path="UDPMuxFromPortWithInterfaceFilter" type="func(string) bool">
+  Filter to determine which network interfaces should be used.
+  
+  ```go
+  ice.UDPMuxFromPortWithInterfaceFilter(func(iface string) bool {
+      return iface != "docker0" // Exclude docker interface
+  })
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithIPFilter" type="func(net.IP) bool">
+  Filter to determine which IP addresses should be used.
+  
+  ```go
+  ice.UDPMuxFromPortWithIPFilter(func(ip net.IP) bool {
+      return !ip.IsLoopback() // Exclude loopback addresses
+  })
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithNetworks" type="...NetworkType">
+  Specify which network types to use (IPv4, IPv6, or both).
+  
+  ```go
+  ice.UDPMuxFromPortWithNetworks(ice.NetworkTypeUDP4)
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithReadBufferSize" type="int">
+  Set the UDP connection read buffer size in bytes.
+  
+  ```go
+  ice.UDPMuxFromPortWithReadBufferSize(8 * 1024 * 1024) // 8MB
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithWriteBufferSize" type="int">
+  Set the UDP connection write buffer size in bytes.
+  
+  ```go
+  ice.UDPMuxFromPortWithWriteBufferSize(8 * 1024 * 1024) // 8MB
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithLogger" type="logging.LeveledLogger">
+  Set a custom logger for the mux.
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithLoopback" type="bool">
+  Include loopback interfaces in the mux.
+  
+  ```go
+  ice.UDPMuxFromPortWithLoopback()
+  ```
+</ParamField>
+
+<ParamField path="UDPMuxFromPortWithNet" type="transport.Net">
+  Set a custom network transport implementation.
+</ParamField>
+
+### Example: Multi-Interface UDP Mux
+
+<CodeGroup>
+```go All Interfaces
+package main
+
+import (
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Listen on all interfaces on port 8443
+    mux, err := ice.NewMultiUDPMuxFromPort(8443)
+    if err != nil {
+        panic(err)
+    }
+    defer mux.Close()
+    
+    // Get all listening addresses
+    addrs := mux.GetListenAddresses()
+    for _, addr := range addrs {
+        println("Listening on:", addr.String())
+    }
+}
+```
+
+```go With Filters
+package main
+
+import (
+    "net"
+    "strings"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    mux, err := ice.NewMultiUDPMuxFromPort(
+        8443,
+        // Only use IPv4
+        ice.UDPMuxFromPortWithNetworks(ice.NetworkTypeUDP4),
+        // Exclude docker interfaces
+        ice.UDPMuxFromPortWithInterfaceFilter(func(iface string) bool {
+            return !strings.Contains(iface, "docker")
+        }),
+        // Set buffer sizes
+        ice.UDPMuxFromPortWithReadBufferSize(4 * 1024 * 1024),
+        ice.UDPMuxFromPortWithWriteBufferSize(4 * 1024 * 1024),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer mux.Close()
+}
+```
+
+```go Custom Muxes
+package main
+
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create individual muxes
+    conn1, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8443})
+    mux1 := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn1})
+    
+    conn2, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8444})
+    mux2 := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn2})
+    
+    // Combine them
+    multiMux := ice.NewMultiUDPMuxDefault(mux1, mux2)
+    defer multiMux.Close()
+}
+```
+</CodeGroup>
+
+## Port Sharing Concepts
+
+### How It Works
+
+1. **Packet Demultiplexing**: When a packet arrives on the shared UDP port, the mux examines it to determine which connection it belongs to.
+
+2. **STUN Username**: For STUN packets, the mux extracts the username attribute and uses the first part (before the colon) as the ufrag to route the packet.
+
+3. **Address Mapping**: After the first STUN packet, the mux remembers the remote address and can route subsequent packets (including media) based on the source address.
+
+4. **Connection Lifecycle**: Each muxed connection is independent and can be closed without affecting others sharing the same port.
+
+### Benefits
+
+- **Reduced Port Usage**: Handle multiple WebRTC connections on a single UDP port
+- **NAT Traversal**: Simplified firewall configuration with fewer ports to open
+- **Scalability**: Better resource utilization for applications with many concurrent connections
+- **IPv4 and IPv6**: Separate connection tracking for IPv4 and IPv6 traffic
+
+### Limitations
+
+<Info>
+  - The first packet from each remote peer must be a STUN message with a USERNAME attribute
+  - Each ufrag should be unique across all connections using the mux
+  - Performance may be impacted with very high numbers of concurrent connections (thousands)
+</Info>
+
+## Best Practices
+
+1. **Use Specific Addresses**: When possible, bind to specific IP addresses rather than 0.0.0.0 for better security and predictability.
+
+2. **Buffer Sizes**: For high-throughput applications, configure appropriate read and write buffer sizes:
+   ```go
+   mux, _ := ice.NewMultiUDPMuxFromPort(
+       8443,
+       ice.UDPMuxFromPortWithReadBufferSize(8 * 1024 * 1024),
+       ice.UDPMuxFromPortWithWriteBufferSize(8 * 1024 * 1024),
+   )
+   ```
+
+3. **Cleanup**: Always defer `Close()` to ensure proper cleanup of resources:
+   ```go
+   mux := ice.NewUDPMuxDefault(params)
+   defer mux.Close()
+   ```
+
+4. **Interface Filtering**: In containerized environments, filter out virtual interfaces:
+   ```go
+   ice.UDPMuxFromPortWithInterfaceFilter(func(iface string) bool {
+       return !strings.HasPrefix(iface, "veth")
+   })
+   ```
+
+## Related
+
+- [TCP Mux](/api/tcp-mux) - TCP connection multiplexing
+- [Universal Mux](/api/universal-mux) - Combined UDP mux with STUN/TURN support
+- [Agent Options](/api/agent-options) - Using muxes with ICE agents

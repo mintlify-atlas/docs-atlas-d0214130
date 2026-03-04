@@ -1,0 +1,262 @@
+---
+title: 'AgentConfig'
+description: 'Legacy configuration structure for ICE Agent'
+---
+
+## Overview
+
+<Warning>
+Deprecated: Use `NewAgentWithOptions` with functional options instead. This struct will be removed in a future major release.
+</Warning>
+
+`AgentConfig` collects arguments for ICE Agent construction into a single structure. It provides backward compatibility but is less flexible than the functional options pattern.
+
+## Type Definition
+
+```go
+type AgentConfig struct {
+    Urls                         []*stun.URI
+    PortMin                      uint16
+    PortMax                      uint16
+    LocalUfrag                   string
+    LocalPwd                     string
+    MulticastDNSMode             MulticastDNSMode
+    MulticastDNSHostName         string
+    DisconnectedTimeout          *time.Duration
+    FailedTimeout                *time.Duration
+    KeepaliveInterval            *time.Duration
+    CheckInterval                *time.Duration
+    NetworkTypes                 []NetworkType
+    CandidateTypes               []CandidateType
+    LoggerFactory                logging.LoggerFactory
+    MaxBindingRequests           *uint16
+    Lite                         bool
+    NAT1To1IPCandidateType       CandidateType // Deprecated
+    NAT1To1IPs                   []string      // Deprecated
+    HostAcceptanceMinWait        *time.Duration
+    SrflxAcceptanceMinWait       *time.Duration
+    PrflxAcceptanceMinWait       *time.Duration
+    RelayAcceptanceMinWait       *time.Duration
+    STUNGatherTimeout            *time.Duration
+    Net                          transport.Net
+    InterfaceFilter              func(string) bool
+    IPFilter                     func(net.IP) bool
+    InsecureSkipVerify           bool
+    TCPMux                       TCPMux
+    UDPMux                       UDPMux
+    UDPMuxSrflx                  UniversalUDPMux
+    ProxyDialer                  proxy.Dialer
+    AcceptAggressiveNomination   bool // Deprecated
+    IncludeLoopback              bool
+    TCPPriorityOffset            *uint16
+    DisableActiveTCP             bool
+    BindingRequestHandler        func(*stun.Message, Candidate, Candidate, *CandidatePair) bool
+    EnableUseCandidateCheckPriority bool
+}
+```
+
+## Fields
+
+### Network Configuration
+
+<ParamField path="Urls" type="[]*stun.URI">
+  List of STUN/TURN server URLs for gathering server reflexive and relay candidates.
+</ParamField>
+
+<ParamField path="PortMin" type="uint16" default="0">
+  Minimum UDP port for host candidates. 0 allows the OS to choose.
+</ParamField>
+
+<ParamField path="PortMax" type="uint16" default="0">
+  Maximum UDP port for host candidates. 0 allows the OS to choose.
+</ParamField>
+
+<ParamField path="NetworkTypes" type="[]NetworkType">
+  Enabled network types for gathering. Empty enables all types (UDP4, UDP6, TCP4, TCP6).
+</ParamField>
+
+<ParamField path="CandidateTypes" type="[]CandidateType">
+  Enabled candidate types. Default: host, server reflexive, and relay.
+</ParamField>
+
+### Credentials
+
+<ParamField path="LocalUfrag" type="string">
+  Local username fragment. Must have at least 24 bits of entropy if specified.
+</ParamField>
+
+<ParamField path="LocalPwd" type="string">
+  Local password. Must have at least 128 bits of entropy if specified.
+</ParamField>
+
+### Timeouts
+
+<ParamField path="DisconnectedTimeout" type="*time.Duration" default="5s">
+  Duration before transitioning to disconnected state. Set to 0 to disable.
+</ParamField>
+
+<ParamField path="FailedTimeout" type="*time.Duration" default="25s">
+  Duration after disconnected before transitioning to failed. Set to 0 to disable.
+</ParamField>
+
+<ParamField path="KeepaliveInterval" type="*time.Duration" default="2s">
+  Interval for sending keepalive packets. Set to 0 to disable.
+</ParamField>
+
+<ParamField path="CheckInterval" type="*time.Duration" default="200ms">
+  How often to run connectivity checks while connecting.
+</ParamField>
+
+<ParamField path="STUNGatherTimeout" type="*time.Duration" default="5s">
+  Wait time for STUN server responses during gathering.
+</ParamField>
+
+### Candidate Acceptance
+
+<ParamField path="HostAcceptanceMinWait" type="*time.Duration" default="0">
+  Minimum wait before selecting host candidates.
+</ParamField>
+
+<ParamField path="SrflxAcceptanceMinWait" type="*time.Duration" default="500ms">
+  Minimum wait before selecting server reflexive candidates.
+</ParamField>
+
+<ParamField path="PrflxAcceptanceMinWait" type="*time.Duration" default="1s">
+  Minimum wait before selecting peer reflexive candidates.
+</ParamField>
+
+<ParamField path="RelayAcceptanceMinWait" type="*time.Duration" default="2s">
+  Minimum wait before selecting relay candidates.
+</ParamField>
+
+### Multicast DNS
+
+<ParamField path="MulticastDNSMode" type="MulticastDNSMode" default="QueryOnly">
+  Controls mDNS behavior for local candidate resolution.
+</ParamField>
+
+<ParamField path="MulticastDNSHostName" type="string">
+  Hostname for mDNS. Must end with ".local". Auto-generated if empty.
+</ParamField>
+
+### Advanced Options
+
+<ParamField path="MaxBindingRequests" type="*uint16" default="7">
+  Maximum binding requests before considering a candidate pair failed.
+</ParamField>
+
+<ParamField path="Lite" type="bool" default="false">
+  Enable ICE-lite mode. Lite agents only gather host candidates and don't perform connectivity checks.
+</ParamField>
+
+<ParamField path="IncludeLoopback" type="bool" default="false">
+  Include loopback addresses in candidate gathering.
+</ParamField>
+
+<ParamField path="DisableActiveTCP" type="bool" default="false">
+  Disable creation of active TCP candidates.
+</ParamField>
+
+<ParamField path="TCPPriorityOffset" type="*uint16" default="27">
+  Value subtracted from TCP candidate priorities relative to UDP.
+</ParamField>
+
+<ParamField path="InsecureSkipVerify" type="bool" default="false">
+  Skip certificate verification for TLS/DTLS TURN connections.
+</ParamField>
+
+<ParamField path="EnableUseCandidateCheckPriority" type="bool" default="false">
+  For lite agents, check priority before switching pairs on USE-CANDIDATE.
+</ParamField>
+
+### Deprecated Fields
+
+<ParamField path="NAT1To1IPs" type="[]string">
+  <Warning>Deprecated: Use `WithAddressRewriteRules` option instead.</Warning>
+  List of public IP addresses for 1:1 NAT mapping.
+</ParamField>
+
+<ParamField path="NAT1To1IPCandidateType" type="CandidateType">
+  <Warning>Deprecated: Use `WithAddressRewriteRules` option instead.</Warning>
+  Candidate type for NAT1To1IPs (host or srflx).
+</ParamField>
+
+<ParamField path="AcceptAggressiveNomination" type="bool">
+  <Warning>Deprecated: Always enabled.</Warning>
+  Accept aggressive nomination from peer.
+</ParamField>
+
+### Filters and Handlers
+
+<ParamField path="InterfaceFilter" type="func(string) bool">
+  Function to whitelist/blacklist network interfaces by name.
+</ParamField>
+
+<ParamField path="IPFilter" type="func(net.IP) bool">
+  Function to whitelist/blacklist IP addresses.
+</ParamField>
+
+<ParamField path="BindingRequestHandler" type="func(*stun.Message, Candidate, Candidate, *CandidatePair) bool">
+  Custom handler for incoming STUN binding requests.
+</ParamField>
+
+### Multiplexing
+
+<ParamField path="TCPMux" type="TCPMux">
+  TCP multiplexer for ICE-TCP. See [TCPMux](/api/tcp-mux).
+</ParamField>
+
+<ParamField path="UDPMux" type="UDPMux">
+  UDP multiplexer for host candidates. See [UDPMux](/api/udp-mux).
+</ParamField>
+
+<ParamField path="UDPMuxSrflx" type="UniversalUDPMux">
+  UDP multiplexer for server reflexive candidates. See [UniversalUDPMux](/api/universal-mux).
+</ParamField>
+
+### Transport
+
+<ParamField path="Net" type="transport.Net">
+  Custom network implementation (for testing or virtual networks).
+</ParamField>
+
+<ParamField path="ProxyDialer" type="proxy.Dialer">
+  Proxy dialer for TURN connections through corporate proxies.
+</ParamField>
+
+### Logging
+
+<ParamField path="LoggerFactory" type="logging.LoggerFactory">
+  Logger factory for creating structured loggers.
+</ParamField>
+
+## Migration Guide
+
+<CodeGroup>
+```go Before (Deprecated)
+config := &ice.AgentConfig{
+    Urls: []*stun.URI{stunURL},
+    PortMin: 10000,
+    PortMax: 20000,
+    NetworkTypes: []ice.NetworkType{
+        ice.NetworkTypeUDP4,
+    },
+}
+agent, err := ice.NewAgent(config)
+```
+
+```go After (Recommended)
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+    ice.WithPortRange(10000, 20000),
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+    }),
+)
+```
+</CodeGroup>
+
+## Related
+
+- [Agent](/api/agent) - Main ICE Agent type
+- [Agent Options](/api/agent-options) - Functional options for agent creation

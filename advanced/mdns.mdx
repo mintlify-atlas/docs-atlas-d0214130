@@ -1,0 +1,292 @@
+---
+title: Multicast DNS (mDNS)
+description: Using mDNS for local network peer discovery without exposing IP addresses
+---
+
+Pion ICE supports Multicast DNS (mDNS) for local network discovery, allowing peers to exchange ICE candidates using `.local` hostnames instead of IP addresses. This enhances privacy by preventing IP address exposure in certain scenarios.
+
+## MulticastDNS Modes
+
+ICE agents can operate in three different mDNS modes:
+
+```go mdns.go
+type MulticastDNSMode byte
+
+const (
+    // MulticastDNSModeDisabled means remote mDNS candidates will be discarded, 
+    // and local host candidates will use IPs.
+    MulticastDNSModeDisabled MulticastDNSMode = iota + 1
+
+    // MulticastDNSModeQueryOnly means remote mDNS candidates will be accepted, 
+    // and local host candidates will use IPs.
+    MulticastDNSModeQueryOnly
+
+    // MulticastDNSModeQueryAndGather means remote mDNS candidates will be accepted,
+    // and local host candidates will use mDNS.
+    MulticastDNSModeQueryAndGather
+)
+```
+
+### Disabled Mode
+
+In this mode, mDNS is completely disabled:
+- Local candidates use IP addresses
+- Remote `.local` candidates are discarded with a warning
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeDisabled,
+})
+```
+
+<Warning>
+If a remote peer sends mDNS candidates while your agent is in `MulticastDNSModeDisabled`, those candidates will be ignored and you may fail to establish connectivity.
+</Warning>
+
+### Query Only Mode
+
+The agent can resolve remote `.local` addresses but publishes IP addresses for its own candidates:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryOnly,
+})
+```
+
+**Use this mode when:**
+- You want to accept connections from privacy-conscious peers using mDNS
+- Your application doesn't require IP address privacy
+- You want maximum compatibility (IP addresses work everywhere)
+
+### Query and Gather Mode
+
+Full mDNS support - both generate and resolve `.local` addresses:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+})
+```
+
+**Use this mode when:**
+- Privacy is important (hide IP addresses)
+- Peers are on the same local network
+- Both sides support mDNS
+
+<Info>
+This is the most privacy-preserving mode but requires both peers to support mDNS and be on networks that allow multicast traffic.
+</Info>
+
+## mDNS Name Generation
+
+When using `MulticastDNSModeQueryAndGather`, Pion ICE generates a unique hostname following the [mDNS ICE candidates specification](https://tools.ietf.org/id/draft-ietf-rtcweb-mdns-ice-candidates-02.html):
+
+```go mdns.go
+func generateMulticastDNSName() (string, error) {
+    // The unique name MUST consist of a version 4 UUID as defined in [RFC4122], 
+    // followed by ".local".
+    u, err := uuid.NewRandom()
+    return u.String() + ".local", err
+}
+```
+
+**Example generated name:**
+```
+550e8400-e29b-41d4-a716-446655440000.local
+```
+
+<Tip>
+The UUID-based naming ensures uniqueness across all peers on the local network and prevents hostname collisions.
+</Tip>
+
+## Network Configuration
+
+The mDNS server can be configured for specific network interfaces:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+    Interfaces:       myInterfaces,        // Specific interfaces
+    IncludeLoopback:  true,                // Include loopback (127.0.0.1)
+    LocalAddress:     net.ParseIP("..."), // Bind to specific address
+})
+```
+
+### IPv4 and IPv6 Support
+
+mDNS operates on both IPv4 and IPv6:
+
+- **IPv4**: `224.0.0.251:5353` (defined in `mdns.DefaultAddressIPv4`)
+- **IPv6**: `[ff02::fb]:5353` (defined in `mdns.DefaultAddressIPv6`)
+
+The agent automatically enables the appropriate IP versions based on your `NetworkTypes` configuration:
+
+```go mdns.go
+var useV4, useV6 bool
+for _, nt := range networkTypes {
+    if nt.IsIPv4() {
+        useV4 = true
+    }
+    if nt.IsIPv6() {
+        useV6 = true
+    }
+}
+```
+
+## Candidate Resolution
+
+When a remote candidate with a `.local` address is added, the agent automatically resolves it:
+
+```go agent.go
+// If we have a mDNS Candidate lets fully resolve it before adding it locally
+if cand.Type() == CandidateTypeHost && strings.HasSuffix(cand.Address(), ".local") {
+    if a.mDNSMode == MulticastDNSModeDisabled {
+        a.log.Warnf("Remote mDNS candidate added, but mDNS is disabled: (%s)", cand.Address())
+        return nil
+    }
+    go a.resolveAndAddMulticastCandidate(hostCandidate)
+}
+```
+
+<Note>
+Resolution happens asynchronously in a goroutine to avoid blocking the agent's main loop.
+</Note>
+
+## Error Handling
+
+If mDNS server initialization fails, Pion ICE automatically falls back to disabled mode:
+
+```go mdns.go
+if mdns4Err != nil && mdns6Err != nil {
+    // If ICE fails to start MulticastDNS server just warn the user and continue
+    log.Errorf("Failed to enable mDNS, continuing in mDNS disabled mode")
+    return nil, MulticastDNSModeDisabled, nil
+}
+```
+
+**Common reasons for mDNS failure:**
+- Port 5353 is already in use
+- Insufficient permissions to bind to multicast addresses
+- Multicast traffic is blocked by firewall
+- Network interface doesn't support multicast
+
+<Warning>
+If mDNS initialization fails, the agent continues with IP-based candidates. Monitor your logs for mDNS errors to ensure expected behavior.
+</Warning>
+
+## Use Cases
+
+### Local Development
+
+mDNS is perfect for development environments where peers are on the same network:
+
+```go
+// Development agent with full mDNS support
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+    IncludeLoopback:  true, // Allow connections to localhost
+})
+```
+
+### Privacy-Preserving Applications
+
+Applications that prioritize user privacy can use mDNS to avoid exposing IP addresses in signaling:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+})
+
+// Candidates will look like:
+// a=candidate:1 1 udp 2130706431 550e8400-e29b-41d4-a716-446655440000.local 54321 typ host
+```
+
+### IoT and Local Device Discovery
+
+IoT devices on a local network can discover each other using mDNS without requiring external STUN/TURN servers:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+    Interfaces:       []string{"eth0"}, // Specific IoT network interface
+})
+```
+
+### Mixed Environments
+
+For maximum compatibility, use query-only mode to support both traditional IP and mDNS peers:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryOnly,
+})
+// Publishes: IP addresses
+// Accepts: Both IP addresses and .local names
+```
+
+## SDP Representation
+
+mDNS candidates appear in SDP with `.local` hostnames:
+
+```
+a=candidate:1 1 udp 2130706431 550e8400-e29b-41d4-a716-446655440000.local 54321 typ host
+```
+
+Compare with traditional IP-based candidate:
+
+```
+a=candidate:1 1 udp 2130706431 192.168.1.100 54321 typ host
+```
+
+## Network Requirements
+
+<Accordion title="Firewall Configuration">
+  Allow UDP traffic on port 5353 for multicast addresses:
+  - IPv4: `224.0.0.251`
+  - IPv6: `ff02::fb`
+  
+  Many corporate networks block multicast traffic. Test connectivity in your target environment.
+</Accordion>
+
+<Accordion title="Router Configuration">
+  Ensure your router/switch supports:
+  - IGMP (Internet Group Management Protocol) for IPv4 multicast
+  - MLD (Multicast Listener Discovery) for IPv6 multicast
+  
+  Some routers disable multicast forwarding by default.
+</Accordion>
+
+<Accordion title="Operating System Support">
+  All major operating systems support mDNS:
+  - **Linux**: Avahi daemon (usually pre-installed)
+  - **macOS**: Bonjour (built-in)
+  - **Windows**: Bonjour service (may need installation)
+  - **iOS/Android**: Native support
+</Accordion>
+
+## Debugging
+
+Enable debug logging to troubleshoot mDNS issues:
+
+```go
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelTrace
+
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    MulticastDNSMode: ice.MulticastDNSModeQueryAndGather,
+    LoggerFactory:    loggerFactory,
+})
+```
+
+Look for messages like:
+- `Failed to enable mDNS over IPv4/IPv6`
+- `Remote mDNS candidate added, but mDNS is disabled`
+- `Failed to resolve .local address`
+
+## Reference
+
+- **mDNS Modes**: `mdns.go:18` - MulticastDNSMode enum
+- **Name Generation**: `mdns.go:33` - generateMulticastDNSName function
+- **Server Creation**: `mdns.go:42` - createMulticastDNS function
+- **Candidate Resolution**: `agent.go:955` - mDNS candidate handling
+- **Specification**: [draft-ietf-rtcweb-mdns-ice-candidates](https://tools.ietf.org/id/draft-ietf-rtcweb-mdns-ice-candidates-02.html)

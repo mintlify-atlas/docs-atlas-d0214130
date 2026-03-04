@@ -1,0 +1,481 @@
+---
+title: Examples
+description: Real-world examples demonstrating Pion ICE features
+---
+
+This guide references examples from the Pion ICE repository, explaining key patterns and use cases.
+
+## Available Examples
+
+The Pion ICE library includes several examples demonstrating different features:
+
+<CardGroup cols={2}>
+  <Card title="Ping-Pong" icon="table-tennis" href="https://github.com/pion/ice/tree/master/examples/ping-pong">
+    Basic peer-to-peer connection with message exchange
+  </Card>
+  <Card title="Continual Gathering" icon="rotate" href="https://github.com/pion/ice/tree/master/examples/continual-gathering">
+    Dynamic candidate gathering with network monitoring
+  </Card>
+  <Card title="Automatic Renomination" icon="arrows-rotate" href="https://github.com/pion/ice/tree/master/examples/automatic-renomination">
+    Automatic switching to better candidate pairs
+  </Card>
+  <Card title="NAT Rules" icon="network-wired" href="https://github.com/pion/ice/tree/master/examples/nat-rules">
+    Address rewriting for complex NAT scenarios
+  </Card>
+</CardGroup>
+
+## Ping-Pong Example
+
+The ping-pong example demonstrates a basic ICE connection between two peers.
+
+### Key Patterns
+
+**Setting up the agent:**
+
+```go examples/ping-pong/main.go
+iceAgent, err = ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+)
+```
+
+**Handling candidates:**
+
+```go examples/ping-pong/main.go
+err = iceAgent.OnCandidate(func(c ice.Candidate) {
+    if c == nil {
+        return
+    }
+    
+    // Send candidate to remote peer via signaling
+    _, err = http.PostForm(fmt.Sprintf("http://localhost:%d/remoteCandidate", remoteHTTPPort),
+        url.Values{
+            "candidate": {c.Marshal()},
+        })
+})
+```
+
+**Establishing connection:**
+
+```go examples/ping-pong/main.go
+// Controlling agent
+if isControlling {
+    conn, err = iceAgent.Dial(context.TODO(), remoteUfrag, remotePwd)
+} else {
+    conn, err = iceAgent.Accept(context.TODO(), remoteUfrag, remotePwd)
+}
+```
+
+**Exchanging data:**
+
+```go examples/ping-pong/main.go
+// Send messages
+val, err := randutil.GenerateCryptoRandomString(15, "abcdefghijklmnopqrstuvwxyz")
+if _, err = conn.Write([]byte(val)); err != nil {
+    panic(err)
+}
+
+// Receive messages
+buf := make([]byte, 1500)
+for {
+    n, err := conn.Read(buf)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Received: '%s'\n", string(buf[:n]))
+}
+```
+
+### Running the Example
+
+```bash
+# Terminal 1 - Controlled agent
+go run examples/ping-pong/main.go
+
+# Terminal 2 - Controlling agent
+go run examples/ping-pong/main.go -controlling
+```
+
+## Continual Gathering Example
+
+Demonstrates dynamic candidate gathering with network interface monitoring.
+
+### Key Patterns
+
+**Configuring continual gathering:**
+
+```go examples/continual-gathering/main.go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
+    ice.WithCandidateTypes([]ice.CandidateType{ice.CandidateTypeHost}),
+    ice.WithContinualGatheringPolicy(ice.GatherContinually),
+    ice.WithNetworkMonitorInterval(2 * time.Second),
+)
+```
+
+**Tracking candidates over time:**
+
+```go examples/continual-gathering/main.go
+candidateCount := 0
+candidateMap := make(map[string]ice.Candidate)
+
+err = agent.OnCandidate(func(candidate ice.Candidate) {
+    if candidate == nil {
+        if policy == ice.GatherOnce {
+            fmt.Println("Gathering completed")
+        }
+        return
+    }
+    
+    candidateCount++
+    candidateID := candidate.String()
+    
+    if _, exists := candidateMap[candidateID]; !exists {
+        candidateMap[candidateID] = candidate
+        fmt.Printf("[%s] Candidate #%d: %s\n", 
+            time.Now().Format("15:04:05"), candidateCount, candidate)
+    }
+})
+```
+
+**Monitoring gathering state:**
+
+```go examples/continual-gathering/main.go
+go func() {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        state, _ := agent.GetGatheringState()
+        localCandidates, _ := agent.GetLocalCandidates()
+        
+        fmt.Printf("[%s] Status: GatheringState=%s, Candidates=%d\n",
+            time.Now().Format("15:04:05"), state, len(localCandidates))
+    }
+}()
+```
+
+### Running the Example
+
+```bash
+# Gather once (default)
+go run examples/continual-gathering/main.go -mode=once
+
+# Gather continually with custom interval
+go run examples/continual-gathering/main.go -mode=continually -interval=5s
+```
+
+<Tip>
+Try connecting/disconnecting network interfaces while running with `-mode=continually` to see new candidates discovered automatically.
+</Tip>
+
+## Automatic Renomination Example
+
+Shows automatic switching to better candidate pairs based on network conditions.
+
+### Key Patterns
+
+**Enabling automatic renomination:**
+
+```go examples/automatic-renomination/main.go
+if isControlling {
+    renominationInterval := 3 * time.Second
+    iceAgent, err = ice.NewAgentWithOptions(
+        ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
+        ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+        ice.WithAutomaticRenomination(renominationInterval),
+    )
+}
+```
+
+**Monitoring candidate pair changes:**
+
+```go examples/automatic-renomination/main.go
+err = iceAgent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
+    fmt.Println(">>> SELECTED CANDIDATE PAIR CHANGED <<<")
+    fmt.Printf("    Local:  %s (type: %s)\n", local, local.Type())
+    fmt.Printf("    Remote: %s (type: %s)\n", remote, remote.Type())
+})
+```
+
+**Tracking RTT:**
+
+```go examples/automatic-renomination/main.go
+func getRTT() string {
+    if selectedLocalCandidateID == "" || selectedRemoteCandidateID == "" {
+        return "N/A"
+    }
+    
+    stats := iceAgent.GetCandidatePairsStats()
+    for _, stat := range stats {
+        if stat.LocalCandidateID == selectedLocalCandidateID && 
+           stat.RemoteCandidateID == selectedRemoteCandidateID {
+            if stat.CurrentRoundTripTime > 0 {
+                return fmt.Sprintf("%.2fms", stat.CurrentRoundTripTime*1000)
+            }
+        }
+    }
+    return "N/A"
+}
+```
+
+**Debugging candidate pairs:**
+
+```go examples/automatic-renomination/main.go
+go func() {
+    for {
+        time.Sleep(5 * time.Second)
+        fmt.Println("=== DEBUG: Candidate Pair States ===")
+        stats := iceAgent.GetCandidatePairsStats()
+        for _, stat := range stats {
+            fmt.Printf("  %s <-> %s\n", stat.LocalCandidateID, stat.RemoteCandidateID)
+            fmt.Printf("    State: %s, Nominated: %v\n", stat.State, stat.Nominated)
+            if stat.CurrentRoundTripTime > 0 {
+                fmt.Printf("    RTT: %.2fms\n", stat.CurrentRoundTripTime*1000)
+            }
+        }
+    }
+}()
+```
+
+### Running the Example
+
+This example requires network namespaces to simulate network changes:
+
+```bash
+# See README in examples/automatic-renomination for setup instructions
+cd examples/automatic-renomination
+cat README.md
+```
+
+<Info>
+The example uses `tc` (traffic control) to add latency to specific interfaces, triggering automatic renomination to better paths.
+</Info>
+
+## NAT Rules Example
+
+Demonstrates address rewriting for various NAT scenarios.
+
+### Key Patterns
+
+**Multi-network host rewriting:**
+
+```go examples/nat-rules/main.go
+rules := []ice.AddressRewriteRule{
+    // Blue network
+    {
+        External:        []string{publicBlue},
+        Local:           localBlue,
+        AsCandidateType: ice.CandidateTypeHost,
+        Networks:        []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeTCP4},
+    },
+    // Green network
+    {
+        External:        []string{publicGreen},
+        Local:           localGreen,
+        AsCandidateType: ice.CandidateTypeHost,
+        Networks:        []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeTCP4},
+    },
+    // Global fallback
+    {
+        External:        []string{globalFallback},
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+```
+
+**Interface-scoped rules:**
+
+```go examples/nat-rules/main.go
+rules := []ice.AddressRewriteRule{
+    {
+        External:        []string{publicBlue},
+        Local:           localBlue,
+        Iface:           "eth0",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+    {
+        External:        []string{publicGreen},
+        Local:           localGreen,
+        Iface:           "eth1",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+```
+
+**Server reflexive pool:**
+
+```go examples/nat-rules/main.go
+rules := []ice.AddressRewriteRule{
+    // Primary srflx
+    {
+        External:        []string{srflxPrimary},
+        Local:           "0.0.0.0",
+        AsCandidateType: ice.CandidateTypeServerReflexive,
+        Networks:        []ice.NetworkType{ice.NetworkTypeUDP4},
+    },
+    // Secondary srflx catch-all
+    {
+        External:        []string{srflxSecondary},
+        AsCandidateType: ice.CandidateTypeServerReflexive,
+        Networks:        []ice.NetworkType{ice.NetworkTypeUDP4},
+    },
+    // Host override
+    {
+        External:        []string{hostPublic},
+        Local:           hostLocal,
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+```
+
+**CIDR-scoped rules:**
+
+```go examples/nat-rules/main.go
+rules := []ice.AddressRewriteRule{
+    // Scoped to specific CIDR
+    {
+        External:        []string{scopedPublic},
+        Local:           scopedLocal,
+        CIDR:            "10.30.0.0/24",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+    // Catch-all for same CIDR
+    {
+        External:        []string{catchAll},
+        CIDR:            "10.30.0.0/24",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+```
+
+### Running the Example
+
+```bash
+# List available scenarios
+go run examples/nat-rules/main.go -list
+
+# Run specific scenario
+go run examples/nat-rules/main.go -scenario=multi-net
+
+# Run all scenarios
+go run examples/nat-rules/main.go -scenario=all
+
+# Use with Docker Compose topology
+cd examples/nat-rules
+docker-compose up
+```
+
+<Note>
+The Docker Compose setup creates a realistic multi-homed environment with multiple networks and NAT gateways.
+</Note>
+
+## Common Patterns
+
+### Error Handling
+
+All examples demonstrate proper error handling:
+
+```go
+if err := agent.GatherCandidates(); err != nil {
+    panic(err)
+}
+```
+
+### Resource Cleanup
+
+Always close the agent when done:
+
+```go
+defer func() {
+    if closeErr := agent.Close(); closeErr != nil {
+        log.Printf("Failed to close agent: %v", closeErr)
+    }
+}()
+```
+
+### Signaling
+
+Examples use HTTP for simplicity, but production should use WebSocket or other real-time protocols:
+
+```go
+// Simple HTTP signaling (examples only)
+_, err = http.PostForm(fmt.Sprintf("http://localhost:%d/remoteCandidate", port),
+    url.Values{"candidate": {c.Marshal()}})
+```
+
+### Logging
+
+Enable debug logging to understand behavior:
+
+```go
+import "github.com/pion/logging"
+
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelDebug
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithLoggerFactory(loggerFactory),
+)
+```
+
+## Building and Running
+
+All examples can be run directly:
+
+```bash
+# Clone repository
+git clone https://github.com/pion/ice.git
+cd ice
+
+# Run any example
+go run examples/ping-pong/main.go
+go run examples/continual-gathering/main.go
+go run examples/automatic-renomination/main.go
+go run examples/nat-rules/main.go
+```
+
+## Troubleshooting Examples
+
+### Ping-Pong Connection Fails
+
+- Ensure both instances are running
+- Check they're using opposite controlling flags
+- Verify HTTP ports are available (9000, 9001)
+- Enable debug logging to see connection progress
+
+### Continual Gathering Shows No New Candidates
+
+- Try actually changing network interfaces (enable/disable WiFi)
+- Check the monitoring interval isn't too long
+- Verify interface filters aren't excluding new interfaces
+
+### Automatic Renomination Doesn't Switch
+
+- Ensure both agents support renomination
+- Check that network conditions actually changed (use `tc` to add latency)
+- Verify renomination interval has elapsed
+- Review candidate pair statistics for RTT differences
+
+### NAT Rules Not Applied
+
+- Verify local addresses match exactly
+- Check rule precedence (more specific first)
+- Enable debug logging to see which rules match
+- Ensure external IPs are valid
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="./configuration">
+    Deep dive into agent configuration options
+  </Card>
+  <Card title="Gathering" icon="magnifying-glass" href="./gathering">
+    Learn about candidate gathering in detail
+  </Card>
+  <Card title="Connectivity Checks" icon="check" href="./connectivity-checks">
+    Understand connectivity check mechanics
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/pion/ice">
+    Browse the full source code and examples
+  </Card>
+</CardGroup>

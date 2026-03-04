@@ -1,0 +1,539 @@
+---
+title: Port Multiplexing
+description: Share UDP and TCP ports across multiple ICE sessions with UDPMux and TCPMux
+---
+
+Port multiplexing allows multiple ICE sessions to share a single UDP or TCP port, reducing port usage and simplifying firewall configuration. This guide covers UDPMux, TCPMux, and UniversalUDPMux.
+
+## Why Multiplexing?
+
+Without multiplexing, each ICE agent allocates separate ports for each network interface and candidate type. This can:
+
+- Exhaust available ports on busy servers
+- Require complex firewall rules
+- Increase NAT mapping overhead
+- Complicate containerized deployments
+
+Multiplexing solves these issues by sharing ports using ICE username fragments (ufrag) to demultiplex traffic.
+
+## UDPMux
+
+UDPMux allows multiple ICE agents to share a single UDP port for host candidates.
+
+### Basic Usage
+
+```go
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+// Create UDP listener
+udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{
+    IP: net.IPv4zero,
+    Port: 8443,
+})
+if err != nil {
+    panic(err)
+}
+
+// Create UDPMux
+mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{
+    UDPConn: udpConn,
+})
+defer mux.Close()
+
+// Create agent with UDPMux
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUDPMux(mux),
+)
+```
+
+### How UDPMux Works
+
+From `udp_mux.go:21`:
+
+```go
+type UDPMux interface {
+    io.Closer
+    GetConn(ufrag string, addr net.Addr) (net.PacketConn, error)
+    RemoveConnByUfrag(ufrag string)
+    GetListenAddresses() []net.Addr
+}
+```
+
+**Demultiplexing Process:**
+
+1. UDPMux reads packets from the shared UDP socket
+2. STUN messages are decoded to extract the username attribute
+3. Username is split by `:` to get the remote ufrag
+4. Packet is routed to the correct agent based on ufrag
+5. Unknown addresses with valid STUN messages create new connections
+
+From `udp_mux.go:285`:
+
+```go
+func (m *UDPMuxDefault) connWorker() {
+    buf := make([]byte, receiveMTU)
+    for {
+        n, addr, err := m.params.UDPConn.ReadFrom(buf)
+        // ...
+        
+        // Check if this is a STUN message
+        if stun.IsMessage(buf[:n]) {
+            msg := &stun.Message{Raw: append([]byte{}, buf[:n]...)}
+            msg.Decode()
+            
+            // Extract username and ufrag
+            attr, _ := msg.Get(stun.AttrUsername)
+            ufrag := strings.Split(string(attr), ":")[0]
+            
+            // Route to appropriate connection
+            destinationConn, _ := m.getConn(ufrag, isIPv6)
+        }
+    }
+}
+```
+
+### UDPMuxParams
+
+```go
+type UDPMuxParams struct {
+    Logger        logging.LeveledLogger
+    UDPConn       net.PacketConn
+    UDPConnString string
+    Net           transport.Net // For unspecified address handling
+}
+```
+
+<Warning>
+UDPMuxDefault should not listen on unspecified addresses (0.0.0.0). Use `NewMultiUDPMuxFromPort` instead for wildcard binding.
+</Warning>
+
+## UniversalUDPMux
+
+UniversalUDPMux extends UDPMux to support server reflexive candidates on the same port:
+
+```go
+import "time"
+
+udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{
+    IP: net.IPv4zero,
+    Port: 8443,
+})
+if err != nil {
+    panic(err)
+}
+
+// Create UniversalUDPMux
+universalMux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+    UDPConn:               udpConn,
+    XORMappedAddrCacheTTL: 25 * time.Second,
+})
+defer universalMux.Close()
+
+// Use for both host and srflx candidates
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUDPMux(universalMux),
+    ice.WithUDPMuxSrflx(universalMux),
+)
+```
+
+### How UniversalUDPMux Works
+
+From `udp_mux_universal.go:17`:
+
+```go
+type UniversalUDPMux interface {
+    UDPMux
+    GetXORMappedAddr(stunAddr net.Addr, deadline time.Duration) (*stun.XORMappedAddress, error)
+    GetRelayedAddr(turnAddr net.Addr, deadline time.Duration) (*net.Addr, error)
+    GetConnForURL(ufrag string, url string, addr net.Addr) (net.PacketConn, error)
+}
+```
+
+**Server Reflexive Handling:**
+
+1. Agent sends STUN binding request through the mux
+2. UniversalUDPMux intercepts STUN responses with XOR-MAPPED-ADDRESS
+3. Caches the mapped address for the STUN server
+4. Returns cached value for subsequent requests (TTL: 25s default)
+
+From `udp_mux_universal.go:176`:
+
+```go
+func (m *UniversalUDPMuxDefault) GetXORMappedAddr(
+    serverAddr net.Addr,
+    deadline time.Duration,
+) (*stun.XORMappedAddress, error) {
+    // Check cache first
+    if mappedAddr, ok := m.xorMappedMap[serverAddr.String()]; ok {
+        if !mappedAddr.expired() {
+            return mappedAddr.addr, nil
+        }
+    }
+    
+    // Send STUN request
+    waitChan, err := m.writeSTUN(serverAddr)
+    
+    // Wait for response
+    select {
+    case <-waitChan:
+        return m.xorMappedMap[serverAddr.String()].addr, nil
+    case <-time.After(deadline):
+        return nil, errXORMappedAddrTimeout
+    }
+}
+```
+
+## TCPMux
+
+TCPMux enables multiple ICE agents to share a single TCP listener for ICE-TCP candidates:
+
+```go
+import "net"
+
+// Create TCP listener
+listener, err := net.ListenTCP("tcp4", &net.TCPAddr{
+    IP: net.IPv4zero,
+    Port: 8443,
+})
+if err != nil {
+    panic(err)
+}
+
+// Create TCPMux
+tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:       listener,
+    ReadBufferSize: 8 * 1024 * 1024,
+    WriteBufferSize: 8 * 1024 * 1024,
+})
+defer tcpMux.Close()
+
+// Create agent with TCPMux
+agent, err := ice.NewAgentWithOptions(
+    ice.WithTCPMux(tcpMux),
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeTCP4,
+    }),
+)
+```
+
+### How TCPMux Works
+
+From `tcp_mux.go:22`:
+
+```go
+type TCPMux interface {
+    io.Closer
+    GetConnByUfrag(ufrag string, isIPv6 bool, local net.IP) (net.PacketConn, error)
+    RemoveConnByUfrag(ufrag string)
+}
+```
+
+**Connection Handling:**
+
+1. TCPMux accepts incoming TCP connections
+2. Waits for first STUN binding request (with timeout)
+3. Extracts ufrag from STUN username attribute
+4. Routes connection to appropriate agent
+5. Creates tcpPacketConn wrapper for the TCP connection
+
+From `tcp_mux.go:196`:
+
+```go
+func (m *TCPMuxDefault) handleConn(conn net.Conn) {
+    buf := make([]byte, 512)
+    
+    // Set timeout for first packet
+    conn.SetReadDeadline(time.Now().Add(m.params.FirstStunBindTimeout))
+    
+    // Read first packet (STUN binding request)
+    n, err := readStreamingPacket(conn, buf)
+    
+    // Decode STUN message
+    msg := &stun.Message{Raw: buf[:n]}
+    msg.Decode()
+    
+    // Extract ufrag
+    attr, _ := msg.Get(stun.AttrUsername)
+    ufrag := strings.Split(string(attr), ":")[0]
+    
+    // Get or create packet connection for this ufrag
+    packetConn, ok := m.GetConnByUfrag(ufrag, isIPv6, localAddr.IP)
+    
+    // Add TCP connection to packet connection
+    packetConn.AddConn(conn, buf)
+}
+```
+
+### TCPMuxParams
+
+```go
+type TCPMuxParams struct {
+    Listener       net.Listener
+    Logger         logging.LeveledLogger
+    ReadBufferSize int
+    WriteBufferSize int
+    
+    // Timeout for first STUN binding request (default: 30s)
+    FirstStunBindTimeout time.Duration
+    
+    // Timeout for connections from unknown STUN requests (default: 30s)
+    AliveDurationForConnFromStun time.Duration
+}
+```
+
+<Info>
+TCPMux creates passive (server) TCP candidates. Active (client) TCP candidates are created automatically when remote passive candidates are added (unless disabled with `WithDisableActiveTCP()`).
+</Info>
+
+### TCP Packet Framing
+
+ICE-TCP uses 2-byte length framing as defined in RFC 4571:
+
+```go
+// From tcp_mux.go:436
+func readStreamingPacket(conn net.Conn, buf []byte) (int, error) {
+    // Read 2-byte length header
+    header := make([]byte, 2)
+    io.ReadFull(conn, header)
+    length := int(binary.BigEndian.Uint16(header))
+    
+    // Read packet data
+    return io.ReadFull(conn, buf[:length])
+}
+```
+
+## Port Sharing Patterns
+
+### Single Port for Everything
+
+Share one port across all agents and candidate types:
+
+```go
+func createSharedMux(port int) (*ice.UniversalUDPMuxDefault, *ice.TCPMuxDefault, error) {
+    // UDP mux
+    udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{
+        IP: net.IPv4zero,
+        Port: port,
+    })
+    if err != nil {
+        return nil, nil, err
+    }
+    
+    udpMux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn: udpConn,
+    })
+    
+    // TCP mux
+    listener, err := net.ListenTCP("tcp4", &net.TCPAddr{
+        IP: net.IPv4zero,
+        Port: port,
+    })
+    if err != nil {
+        udpMux.Close()
+        return nil, nil, err
+    }
+    
+    tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener: listener,
+    })
+    
+    return udpMux, tcpMux, nil
+}
+
+func createAgent(udpMux *ice.UniversalUDPMuxDefault, tcpMux *ice.TCPMuxDefault) (*ice.Agent, error) {
+    return ice.NewAgentWithOptions(
+        ice.WithUDPMux(udpMux),
+        ice.WithUDPMuxSrflx(udpMux),
+        ice.WithTCPMux(tcpMux),
+        ice.WithNetworkTypes([]ice.NetworkType{
+            ice.NetworkTypeUDP4,
+            ice.NetworkTypeTCP4,
+        }),
+    )
+}
+```
+
+### Separate Muxes for Different Roles
+
+Use different muxes for different purposes:
+
+```go
+// Host candidate mux
+hostMux := ice.NewUDPMuxDefault(ice.UDPMuxParams{
+    UDPConn: udpConn,
+})
+
+// Srflx candidate mux
+srflxMux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+    UDPConn: udpConn2,
+})
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUDPMux(hostMux),
+    ice.WithUDPMuxSrflx(srflxMux),
+)
+```
+
+## Performance Considerations
+
+### Buffer Sizing
+
+For TCPMux, configure appropriate buffer sizes:
+
+```go
+tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:        listener,
+    ReadBufferSize:  8 * 1024 * 1024,  // 8MB read buffer
+    WriteBufferSize: 4 * 1024 * 1024,  // 4MB write buffer
+})
+```
+
+<Tip>
+Larger buffers reduce packet drops under load but consume more memory. The default write buffer of 4MB is recommended for most applications.
+</Tip>
+
+### Connection Timeouts
+
+Configure timeouts to prevent resource exhaustion:
+
+```go
+tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:                     listener,
+    FirstStunBindTimeout:         30 * time.Second,  // Wait for first STUN
+    AliveDurationForConnFromStun: 30 * time.Second,  // Keep unknown conns
+})
+```
+
+## Limitations
+
+### UDPMux Limitations
+
+- Port range configuration is ignored when UDPMux is used
+- Each agent must have a unique ufrag
+- Unspecified address (0.0.0.0) requires special handling
+
+### TCPMux Limitations
+
+- Only passive TCP candidates are directly supported
+- Active TCP candidates require additional setup
+- Disable active TCP with `WithDisableActiveTCP()` if not needed
+
+### General Limitations
+
+- Multiplexing increases complexity of debugging
+- Single point of failure (shared socket)
+- Potential performance bottleneck under high load
+
+## Example: Complete Multiplexing Setup
+
+```go
+import (
+    "fmt"
+    "net"
+    "github.com/pion/ice/v4"
+    "github.com/pion/logging"
+)
+
+func setupMultiplexing() (*ice.Agent, func(), error) {
+    // Create shared UDP port
+    udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{
+        IP:   net.IPv4zero,
+        Port: 8443,
+    })
+    if err != nil {
+        return nil, nil, fmt.Errorf("udp listen: %w", err)
+    }
+    
+    // Create UniversalUDPMux for host + srflx
+    udpMux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn: udpConn,
+        Logger:  logging.NewDefaultLoggerFactory().NewLogger("udp-mux"),
+    })
+    
+    // Create shared TCP port
+    listener, err := net.ListenTCP("tcp4", &net.TCPAddr{
+        IP:   net.IPv4zero,
+        Port: 8443,
+    })
+    if err != nil {
+        udpMux.Close()
+        return nil, nil, fmt.Errorf("tcp listen: %w", err)
+    }
+    
+    // Create TCPMux
+    tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener,
+        Logger:          logging.NewDefaultLoggerFactory().NewLogger("tcp-mux"),
+        ReadBufferSize:  8 * 1024 * 1024,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    // Create ICE agent
+    agent, err := ice.NewAgentWithOptions(
+        ice.WithUDPMux(udpMux),
+        ice.WithUDPMuxSrflx(udpMux),
+        ice.WithTCPMux(tcpMux),
+        ice.WithNetworkTypes([]ice.NetworkType{
+            ice.NetworkTypeUDP4,
+            ice.NetworkTypeTCP4,
+        }),
+    )
+    if err != nil {
+        tcpMux.Close()
+        udpMux.Close()
+        return nil, nil, fmt.Errorf("create agent: %w", err)
+    }
+    
+    // Cleanup function
+    cleanup := func() {
+        agent.Close()
+        tcpMux.Close()
+        udpMux.Close()
+    }
+    
+    fmt.Printf("Multiplexing on port 8443 (UDP and TCP)\n")
+    
+    return agent, cleanup, nil
+}
+```
+
+## Troubleshooting
+
+### No Candidates with UDPMux
+
+- Verify `WithUDPMux()` is set on the agent
+- Check that the UDP socket is bound correctly
+- Ensure network types include UDP variants
+
+### TCPMux Connection Failures
+
+- Verify first STUN binding arrives within timeout
+- Check firewall allows incoming TCP connections
+- Enable debug logging to see connection handling
+
+### Ufrag Conflicts
+
+- Ensure each agent has a unique ufrag
+- Use `WithLocalCredentials()` for explicit control
+- Check for ufrag reuse across agents
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="./configuration">
+    Configure ICE agent options
+  </Card>
+  <Card title="NAT Traversal" icon="route" href="./nat-traversal">
+    Set up NAT traversal with address rewriting
+  </Card>
+  <Card title="Gathering" icon="magnifying-glass" href="./gathering">
+    Learn about candidate gathering
+  </Card>
+  <Card title="Examples" icon="code" href="./examples">
+    See multiplexing examples
+  </Card>
+</CardGroup>

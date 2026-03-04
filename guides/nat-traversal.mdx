@@ -1,0 +1,510 @@
+---
+title: NAT Traversal
+description: Configure NAT traversal with STUN, TURN, and address rewrite rules
+---
+
+NAT traversal enables peer-to-peer connectivity through Network Address Translation (NAT) devices. This guide covers STUN for server reflexive candidates, TURN for relay candidates, and address rewrite rules for 1:1 NAT scenarios.
+
+## NAT Traversal Techniques
+
+ICE uses three main techniques to traverse NAT:
+
+<Steps>
+  <Step title="STUN - Server Reflexive Candidates">
+    Discover your public IP and port by querying a STUN server. Works through most NATs but fails with symmetric NAT.
+  </Step>
+  <Step title="TURN - Relay Candidates">
+    Relay all traffic through a TURN server. Works in all NAT scenarios but adds latency and server costs.
+  </Step>
+  <Step title="Address Rewriting">
+    Map known private addresses to public addresses for 1:1 NAT scenarios like AWS EC2 or static NAT.
+  </Step>
+</Steps>
+
+## STUN for Server Reflexive Candidates
+
+STUN (Session Traversal Utilities for NAT) helps discover your public address:
+
+```go
+import "github.com/pion/stun/v3"
+
+stunURLs := []*stun.URI{
+    {Scheme: stun.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+    {Scheme: stun.SchemeTypeSTUN, Host: "stun1.l.google.com", Port: 19302},
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(stunURLs),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+    }),
+)
+```
+
+### How STUN Works
+
+From `gather.go:734`:
+
+```go
+func (a *Agent) gatherCandidatesSrflx(ctx context.Context, urls []*stun.URI, networkTypes []NetworkType) {
+    for _, networkType := range networkTypes {
+        for i := range urls {
+            // Bind local UDP socket
+            conn, err := listenUDPInPortRange(...)
+            
+            // Send STUN binding request
+            xorAddr, err := stunx.GetXORMappedAddr(conn, serverAddr, a.stunGatherTimeout)
+            
+            // Create srflx candidate with public address
+            srflxConfig := CandidateServerReflexiveConfig{
+                Network:   network,
+                Address:   xorAddr.IP.String(),
+                Port:      xorAddr.Port,
+                Component: ComponentRTP,
+                RelAddr:   lAddr.IP.String(),
+                RelPort:   lAddr.Port,
+            }
+            c, err := NewCandidateServerReflexive(&srflxConfig)
+        }
+    }
+}
+```
+
+### STUN Gather Timeout
+
+Configure how long to wait for STUN responses:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(stunURLs),
+    ice.WithSTUNGatherTimeout(5 * time.Second), // default: 5s
+)
+```
+
+<Info>
+Increase the timeout if STUN servers are slow to respond or network conditions are poor.
+</Info>
+
+## TURN for Relay Candidates
+
+TURN (Traversal Using Relays around NAT) provides relay candidates that work through any NAT:
+
+```go
+turnURLs := []*stun.URI{
+    {
+        Scheme:   stun.SchemeTypeTURN,
+        Host:     "turn.example.com",
+        Port:     3478,
+        Username: "username",
+        Password: "password",
+    },
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(turnURLs),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+        ice.CandidateTypeRelay,
+    }),
+)
+```
+
+### TURN Transport Protocols
+
+TURN supports multiple transport protocols:
+
+<Tabs>
+  <Tab title="UDP">
+    ```go
+    {Scheme: stun.SchemeTypeTURN, Proto: stun.ProtoTypeUDP,
+     Host: "turn.example.com", Port: 3478,
+     Username: "user", Password: "pass"}
+    ```
+    
+    Standard TURN over UDP. Most efficient but may be blocked by firewalls.
+  </Tab>
+  
+  <Tab title="TCP">
+    ```go
+    {Scheme: stun.SchemeTypeTURN, Proto: stun.ProtoTypeTCP,
+     Host: "turn.example.com", Port: 3478,
+     Username: "user", Password: "pass"}
+    ```
+    
+    TURN over TCP. Better firewall traversal but higher latency.
+  </Tab>
+  
+  <Tab title="TLS">
+    ```go
+    {Scheme: stun.SchemeTypeTURNS, Proto: stun.ProtoTypeTCP,
+     Host: "turn.example.com", Port: 5349,
+     Username: "user", Password: "pass"}
+    ```
+    
+    TURN over TLS. Encrypted and works through most corporate firewalls.
+  </Tab>
+  
+  <Tab title="DTLS">
+    ```go
+    {Scheme: stun.SchemeTypeTURNS, Proto: stun.ProtoTypeUDP,
+     Host: "turn.example.com", Port: 5349,
+     Username: "user", Password: "pass"}
+    ```
+    
+    TURN over DTLS. Encrypted with lower latency than TLS.
+  </Tab>
+</Tabs>
+
+### TURN Allocation Process
+
+From `gather.go:826`:
+
+```go
+func (a *Agent) gatherCandidatesRelay(ctx context.Context, urls []*stun.URI) {
+    for _, url := range urls {
+        // Create TURN client
+        client, err := turn.NewClient(&turn.ClientConfig{
+            TURNServerAddr: turnServerAddr,
+            Conn:           locConn,
+            Username:       url.Username,
+            Password:       url.Password,
+        })
+        
+        // Listen for allocation
+        client.Listen()
+        
+        // Allocate relay address
+        relayConn, err := client.Allocate()
+        
+        // Create relay candidate
+        relayConfig := CandidateRelayConfig{
+            Network:   network,
+            Address:   relayConn.LocalAddr().IP.String(),
+            Port:      relayConn.LocalAddr().Port,
+            RelAddr:   localAddr,
+            RelPort:   localPort,
+        }
+    }
+}
+```
+
+### TLS Certificate Verification
+
+Skip certificate verification for self-signed certificates (development only):
+
+```go
+// NOT RECOMMENDED FOR PRODUCTION
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(turnURLs),
+    ice.WithInsecureSkipVerify(true),
+)
+```
+
+<Warning>
+Only use `InsecureSkipVerify` in development. In production, use properly signed certificates.
+</Warning>
+
+## Address Rewrite Rules
+
+Address rewrite rules map local private addresses to known public addresses for 1:1 NAT scenarios:
+
+### Basic Host Rewriting
+
+```go
+rules := []ice.AddressRewriteRule{
+    {
+        External:        []string{"203.0.113.10"},
+        Local:           "10.0.1.100",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(rules...),
+)
+```
+
+This replaces host candidate `10.0.1.100` with `203.0.113.10`.
+
+### Server Reflexive Rewriting
+
+```go
+rules := []ice.AddressRewriteRule{
+    {
+        External:        []string{"198.51.100.50", "198.51.100.60"},
+        AsCandidateType: ice.CandidateTypeServerReflexive,
+        Mode:            ice.AddressRewriteAppend,
+    },
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(rules...),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+    }),
+)
+```
+
+This creates additional srflx candidates without STUN servers.
+
+### Rewrite Modes
+
+<Accordion title="AddressRewriteReplace">
+  Replaces the original candidate with the external address(es).
+  
+  ```go
+  {
+      External: []string{"203.0.113.10"},
+      Local:    "10.0.1.100",
+      Mode:     ice.AddressRewriteReplace,
+  }
+  ```
+  
+  Default for host candidates.
+</Accordion>
+
+<Accordion title="AddressRewriteAppend">
+  Keeps the original candidate and adds the external address(es).
+  
+  ```go
+  {
+      External: []string{"203.0.113.10"},
+      Local:    "10.0.1.100",
+      Mode:     ice.AddressRewriteAppend,
+  }
+  ```
+  
+  Default for srflx and relay candidates.
+</Accordion>
+
+### Rule Scoping
+
+Limit rules to specific interfaces, CIDR blocks, or network types:
+
+```go
+rules := []ice.AddressRewriteRule{
+    // Interface-scoped rule
+    {
+        External:        []string{"203.0.113.10"},
+        Iface:           "eth0",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+    // CIDR-scoped rule
+    {
+        External:        []string{"203.0.113.20"},
+        CIDR:            "10.10.0.0/24",
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+    // Network type scoped rule
+    {
+        External:        []string{"203.0.113.30"},
+        Networks:        []ice.NetworkType{ice.NetworkTypeUDP4},
+        AsCandidateType: ice.CandidateTypeHost,
+    },
+}
+```
+
+### Rule Precedence
+
+From `agent_options.go:36`:
+
+Rules are evaluated in order with the following precedence:
+
+1. **Explicit local match** - Rules with `Local` field matching the candidate address
+2. **Most specific catch-all** - Rules without `Local` but with the most specific scope:
+   - Interface + CIDR (highest)
+   - Interface only
+   - CIDR only
+   - Global (lowest)
+
+```go
+rules := []ice.AddressRewriteRule{
+    // Most specific: iface + CIDR
+    {External: []string{"203.0.113.10"}, Iface: "eth0", CIDR: "10.10.0.0/24"},
+    // Interface only
+    {External: []string{"203.0.113.20"}, Iface: "eth0"},
+    // CIDR only
+    {External: []string{"203.0.113.30"}, CIDR: "10.0.0.0/8"},
+    // Global catch-all
+    {External: []string{"203.0.113.100"}},
+}
+```
+
+## Complete NAT Traversal Examples
+
+### AWS EC2 Instance
+
+Map EC2 private IP to public IP:
+
+```go
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+func createEC2Agent(privateIP, publicIP string) (*ice.Agent, error) {
+    rules := []ice.AddressRewriteRule{
+        {
+            External:        []string{publicIP},
+            Local:           privateIP,
+            AsCandidateType: ice.CandidateTypeHost,
+            Mode:            ice.AddressRewriteReplace,
+        },
+    }
+    
+    return ice.NewAgentWithOptions(
+        ice.WithAddressRewriteRules(rules...),
+        ice.WithNetworkTypes([]ice.NetworkType{
+            ice.NetworkTypeUDP4,
+        }),
+        ice.WithCandidateTypes([]ice.CandidateType{
+            ice.CandidateTypeHost,
+        }),
+    )
+}
+```
+
+### Multi-Homed Server
+
+Map multiple network interfaces:
+
+```go
+func createMultiHomedAgent() (*ice.Agent, error) {
+    rules := []ice.AddressRewriteRule{
+        // Blue network
+        {
+            External:        []string{"203.0.113.10"},
+            Local:           "10.10.0.20",
+            Iface:           "eth0",
+            AsCandidateType: ice.CandidateTypeHost,
+        },
+        // Green network
+        {
+            External:        []string{"203.0.113.20"},
+            Local:           "10.20.0.20",
+            Iface:           "eth1",
+            AsCandidateType: ice.CandidateTypeHost,
+        },
+        // Fallback for other interfaces
+        {
+            External:        []string{"198.51.100.200"},
+            AsCandidateType: ice.CandidateTypeHost,
+        },
+    }
+    
+    return ice.NewAgentWithOptions(
+        ice.WithAddressRewriteRules(rules...),
+    )
+}
+```
+
+### STUN + Address Rewriting
+
+Combine STUN with rewrite rules:
+
+```go
+func createHybridAgent() (*ice.Agent, error) {
+    stunURLs := []*stun.URI{
+        {Scheme: stun.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+    }
+    
+    rules := []ice.AddressRewriteRule{
+        // Known mapping for primary interface
+        {
+            External:        []string{"203.0.113.10"},
+            Local:           "10.0.1.100",
+            Iface:           "eth0",
+            AsCandidateType: ice.CandidateTypeHost,
+        },
+        // STUN for other interfaces
+    }
+    
+    return ice.NewAgentWithOptions(
+        ice.WithUrls(stunURLs),
+        ice.WithAddressRewriteRules(rules...),
+        ice.WithCandidateTypes([]ice.CandidateType{
+            ice.CandidateTypeHost,
+            ice.CandidateTypeServerReflexive,
+        }),
+    )
+}
+```
+
+## NAT Type Detection
+
+While Pion ICE doesn't include built-in NAT type detection, you can infer NAT behavior:
+
+```go
+func detectNATBehavior(agent *ice.Agent) {
+    candidates, _ := agent.GetLocalCandidates()
+    
+    hasHost := false
+    hasSrflx := false
+    
+    for _, c := range candidates {
+        switch c.Type() {
+        case ice.CandidateTypeHost:
+            hasHost = true
+        case ice.CandidateTypeServerReflexive:
+            hasSrflx = true
+        }
+    }
+    
+    if !hasHost && hasSrflx {
+        fmt.Println("Behind NAT (no direct connectivity)")
+    } else if hasHost && hasSrflx {
+        fmt.Println("Behind NAT with host candidates (may have public IPs)")
+    } else if hasHost && !hasSrflx {
+        fmt.Println("No NAT or STUN failed")
+    }
+}
+```
+
+## Troubleshooting
+
+### No Server Reflexive Candidates
+
+- Verify STUN server URLs are correct
+- Check firewall allows UDP to STUN port (usually 3478 or 19302)
+- Increase STUN gather timeout
+- Try multiple STUN servers
+
+### TURN Allocation Failures
+
+- Verify TURN credentials are correct
+- Check TURN server allows your source IP
+- Ensure required transport protocol is supported
+- Check firewall allows connections to TURN port
+
+### Address Rewriting Not Working
+
+- Verify local address matches exactly
+- Check rule precedence (more specific rules first)
+- Enable debug logging to see which rules match
+- Verify external IPs are valid and reachable
+
+### Symmetric NAT Issues
+
+- Use TURN relay candidates
+- Try multiple STUN servers to detect symmetric NAT
+- Consider deploying TURN servers closer to users
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="./configuration">
+    Configure ICE agent options
+  </Card>
+  <Card title="Gathering" icon="magnifying-glass" href="./gathering">
+    Learn about candidate gathering
+  </Card>
+  <Card title="Multiplexing" icon="network-wired" href="./multiplexing">
+    Share ports with UDPMux and TCPMux
+  </Card>
+  <Card title="Examples" icon="code" href="./examples">
+    See NAT traversal examples
+  </Card>
+</CardGroup>

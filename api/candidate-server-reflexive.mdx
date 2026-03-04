@@ -1,0 +1,370 @@
+---
+title: "Server Reflexive Candidates"
+description: "Create and configure server reflexive candidates using STUN in Pion ICE"
+---
+
+## Overview
+
+Server reflexive candidates (srflx) are discovered using STUN (Session Traversal Utilities for NAT) servers. They represent the public IP address and port mapping allocated by a NAT device, enabling peer-to-peer connections across NATs.
+
+## CandidateServerReflexive
+
+A server reflexive candidate represents a public address binding allocated by a NAT, discovered through STUN.
+
+```go candidate_server_reflexive.go
+type CandidateServerReflexive struct {
+    candidateBase
+}
+```
+
+Server reflexive candidates embed `candidateBase` which provides common functionality like priority calculation, marshaling, and traffic tracking.
+
+## Creating Server Reflexive Candidates
+
+### NewCandidateServerReflexive
+
+Creates a new server reflexive candidate from the provided configuration.
+
+```go
+func NewCandidateServerReflexive(config *CandidateServerReflexiveConfig) (*CandidateServerReflexive, error)
+```
+
+<ParamField path="config" type="*CandidateServerReflexiveConfig" required>
+  Configuration for the server reflexive candidate.
+</ParamField>
+
+Returns the created `CandidateServerReflexive` or an error if the configuration is invalid (e.g., invalid IP address).
+
+## CandidateServerReflexiveConfig
+
+Configuration structure for creating server reflexive candidates.
+
+```go candidate_server_reflexive.go
+type CandidateServerReflexiveConfig struct {
+    CandidateID string
+    Network     string
+    Address     string
+    Port        int
+    Component   uint16
+    Priority    uint32
+    Foundation  string
+    RelAddr     string
+    RelPort     int
+}
+```
+
+### Configuration Fields
+
+<ParamField path="CandidateID" type="string">
+  Unique identifier for the candidate. If empty, a UUID will be automatically generated.
+</ParamField>
+
+<ParamField path="Network" type="string" required>
+  Network protocol: "udp", "tcp", "udp4", "udp6", "tcp4", or "tcp6".
+</ParamField>
+
+<ParamField path="Address" type="string" required>
+  The public IP address discovered via STUN (the reflexive address).
+</ParamField>
+
+<ParamField path="Port" type="int" required>
+  Port number of the public address.
+</ParamField>
+
+<ParamField path="Component" type="uint16" required>
+  Component identifier. Use `ComponentRTP` (1) for RTP or `ComponentRTCP` (2) for RTCP.
+</ParamField>
+
+<ParamField path="Priority" type="uint32">
+  Custom priority value. If 0, priority will be calculated automatically. Server reflexive candidates have a type preference of 100.
+</ParamField>
+
+<ParamField path="Foundation" type="string">
+  Custom foundation string. If empty, foundation will be calculated as a CRC32 checksum of the candidate type, address, and network type.
+</ParamField>
+
+<ParamField path="RelAddr" type="string" required>
+  The base (local) IP address from which the STUN request was sent.
+</ParamField>
+
+<ParamField path="RelPort" type="int" required>
+  The port of the base (local) address.
+</ParamField>
+
+## Examples
+
+### Creating a Server Reflexive Candidate
+
+```go
+candidate, err := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+    Network:   "udp",
+    Address:   "203.0.113.1",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",
+    RelPort:   50000,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+// Output: candidate:842163049 1 udp 1677729535 203.0.113.1 54321 typ srflx raddr 192.168.1.100 rport 50000
+```
+
+### Accessing Related Address
+
+```go
+candidate, _ := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+    Network:   "udp",
+    Address:   "203.0.113.1",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",
+    RelPort:   50000,
+})
+
+relatedAddr := candidate.RelatedAddress()
+if relatedAddr != nil {
+    fmt.Printf("Public: %s:%d\n", candidate.Address(), candidate.Port())
+    fmt.Printf("Local: %s:%d\n", relatedAddr.Address, relatedAddr.Port)
+}
+// Output:
+// Public: 203.0.113.1:54321
+// Local: 192.168.1.100:50000
+```
+
+### Creating an IPv6 Server Reflexive Candidate
+
+```go
+candidate, err := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+    Network:   "udp6",
+    Address:   "2001:db8::1",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "fe80::1",
+    RelPort:   50000,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Network Type:", candidate.NetworkType())
+// Output: Network Type: udp6
+```
+
+## STUN Usage
+
+Server reflexive candidates are discovered through the STUN protocol. The typical discovery process is:
+
+1. **Send STUN Binding Request** - Send a STUN request from a local interface to a STUN server
+2. **Receive STUN Response** - The STUN server responds with the public IP and port it observed
+3. **Create Candidate** - Create a server reflexive candidate with the discovered address
+4. **Set Related Address** - Record the local interface as the related address
+
+### Example STUN Integration
+
+```go
+import (
+    "github.com/pion/ice/v4"
+    "github.com/pion/stun/v3"
+)
+
+// Local address
+localAddr := "192.168.1.100:50000"
+
+// STUN server
+stunServer := "stun.l.google.com:19302"
+
+// Send STUN binding request
+conn, err := net.Dial("udp", stunServer)
+if err != nil {
+    log.Fatal(err)
+}
+defer conn.Close()
+
+message := stun.MustBuild(stun.TransactionID, stun.BindingRequest)
+if _, err := conn.Write(message.Raw); err != nil {
+    log.Fatal(err)
+}
+
+// Read STUN response
+buf := make([]byte, 1500)
+n, err := conn.Read(buf)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Parse response
+var response stun.Message
+response.Raw = buf[:n]
+if err := response.Decode(); err != nil {
+    log.Fatal(err)
+}
+
+// Extract mapped address
+var xorAddr stun.XORMappedAddress
+if err := xorAddr.GetFrom(&response); err != nil {
+    log.Fatal(err)
+}
+
+// Create server reflexive candidate
+candidate, err := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+    Network:   "udp",
+    Address:   xorAddr.IP.String(),
+    Port:      xorAddr.Port,
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",
+    RelPort:   50000,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Discovered public address: %s:%d\n", 
+    candidate.Address(), candidate.Port())
+```
+
+## Priority Calculation
+
+Server reflexive candidates have a type preference of 100:
+
+```
+priority = (2^24 * 100) + (2^8 * local-preference) + (256 - component)
+```
+
+This makes them less preferred than host candidates (126) and peer reflexive candidates (110), but more preferred than relay candidates (0).
+
+## When to Use Server Reflexive Candidates
+
+Server reflexive candidates are essential when:
+
+- Peers are behind different NATs
+- Direct peer-to-peer connections need NAT traversal
+- You want to avoid TURN server overhead
+- The NAT allows inbound traffic after outbound binding
+- Both peers can reach public STUN servers
+
+### NAT Compatibility
+
+Server reflexive candidates work with most NAT types:
+
+<ResponseField name="Full Cone NAT" type="Compatible">
+  Works perfectly. Single public binding for all destinations.
+</ResponseField>
+
+<ResponseField name="Address-Restricted NAT" type="Compatible">
+  Works well. Requires coordination between peers.
+</ResponseField>
+
+<ResponseField name="Port-Restricted NAT" type="Compatible">
+  Works with ICE connectivity checks.
+</ResponseField>
+
+<ResponseField name="Symmetric NAT" type="Limited">
+  May require peer reflexive candidates or relay candidates.
+</ResponseField>
+
+## Related Address
+
+The related address for a server reflexive candidate is the base (host) candidate from which it was derived:
+
+```go
+relatedAddr := candidate.RelatedAddress()
+if relatedAddr != nil {
+    fmt.Printf("Base address: %s:%d\n", relatedAddr.Address, relatedAddr.Port)
+}
+```
+
+This is useful for:
+- Debugging NAT behavior
+- Understanding address mappings
+- Diagnostics and logging
+
+## Connection Characteristics
+
+**Advantages:**
+- Direct peer-to-peer connectivity through NAT
+- No media relay required
+- Lower latency than relay candidates
+- No server bandwidth costs for media
+- Works with most NAT types
+
+**Disadvantages:**
+- Requires STUN server for discovery
+- May not work with symmetric NATs
+- Higher priority than relay but lower than host
+- Depends on NAT binding timeout
+
+## Common Patterns
+
+### Multiple STUN Servers
+
+Query multiple STUN servers for redundancy:
+
+```go
+stunServers := []string{
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "stun2.l.google.com:19302",
+}
+
+for _, server := range stunServers {
+    // Perform STUN binding request
+    publicAddr := performSTUNRequest(server, localAddr)
+    
+    candidate, err := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+        Network:   "udp",
+        Address:   publicAddr.IP,
+        Port:      publicAddr.Port,
+        Component: ice.ComponentRTP,
+        RelAddr:   localAddr.IP,
+        RelPort:   localAddr.Port,
+    })
+    if err != nil {
+        continue
+    }
+    
+    // Use candidate
+}
+```
+
+### Caching STUN Results
+
+Cache discovered public addresses to avoid repeated STUN queries:
+
+```go
+var (
+    publicAddrCache     net.IP
+    publicPortCache     int
+    lastSTUNQuery       time.Time
+    stunCacheDuration   = 5 * time.Minute
+)
+
+if time.Since(lastSTUNQuery) > stunCacheDuration {
+    // Query STUN server
+    publicAddrCache, publicPortCache = performSTUNRequest(stunServer, localAddr)
+    lastSTUNQuery = time.Now()
+}
+
+// Use cached values
+candidate, _ := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+    Network:   "udp",
+    Address:   publicAddrCache.String(),
+    Port:      publicPortCache,
+    Component: ice.ComponentRTP,
+    RelAddr:   localAddr.IP,
+    RelPort:   localAddr.Port,
+})
+```
+
+<Note>
+NAT bindings typically have timeouts (often 30-300 seconds). Ensure keepalives are sent to maintain the binding if long-lived connections are needed.
+</Note>
+
+## See Also
+
+- [Candidate Types](/api/candidate-types) - Core candidate interfaces and types
+- [Host Candidates](/api/candidate-host) - Direct local interface candidates
+- [Peer Reflexive Candidates](/api/candidate-peer-reflexive) - Candidates discovered during connectivity checks
+- [Relay Candidates](/api/candidate-relay) - TURN-based relay candidates

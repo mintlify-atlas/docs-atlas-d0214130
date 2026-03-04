@@ -1,0 +1,469 @@
+---
+title: "Universal UDP Mux"
+description: "Unified UDP multiplexing with integrated STUN server reflexive address discovery"
+---
+
+## Overview
+
+Universal UDP Mux extends the standard UDP multiplexing functionality by adding support for STUN server reflexive address discovery and TURN relay functionality. It combines the capabilities of `UDPMux` with built-in handling of STUN/TURN server communication, making it ideal for NAT traversal scenarios.
+
+The Universal Mux intercepts and processes STUN responses from STUN/TURN servers before passing packets to the underlying UDP mux, automatically managing XOR-mapped addresses and relay allocations.
+
+## UniversalUDPMux Interface
+
+The `UniversalUDPMux` interface extends `UDPMux` with additional methods for STUN and TURN functionality.
+
+```go
+type UniversalUDPMux interface {
+    UDPMux
+    GetXORMappedAddr(stunAddr net.Addr, deadline time.Duration) (*stun.XORMappedAddress, error)
+    GetRelayedAddr(turnAddr net.Addr, deadline time.Duration) (*net.Addr, error)
+    GetConnForURL(ufrag string, url string, addr net.Addr) (net.PacketConn, error)
+}
+```
+
+### Methods
+
+<ParamField path="GetXORMappedAddr" type="func(stunAddr net.Addr, deadline time.Duration) (*stun.XORMappedAddress, error)">
+  Discovers the server reflexive address by sending a STUN binding request to the specified STUN server. Results are cached to avoid repeated requests.
+  
+  **Parameters:**
+  - `stunAddr` - The address of the STUN server
+  - `deadline` - Maximum time to wait for a response
+  
+  **Returns:** The discovered XOR-mapped address or an error if discovery fails or times out
+</ParamField>
+
+<ParamField path="GetRelayedAddr" type="func(turnAddr net.Addr, deadline time.Duration) (*net.Addr, error)">
+  Creates a relayed connection through a TURN server and returns the relay address.
+  
+  **Parameters:**
+  - `turnAddr` - The address of the TURN server
+  - `deadline` - Maximum time to wait for relay allocation
+  
+  **Returns:** The relay address or an error
+  
+  **Note:** This method is not yet implemented and returns `errNotImplemented`.
+</ParamField>
+
+<ParamField path="GetConnForURL" type="func(ufrag string, url string, addr net.Addr) (net.PacketConn, error)">
+  Returns a connection that is unique to both the ufrag and the server URL. This allows multiple STUN/TURN servers to be used simultaneously without connection conflicts.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment from the ICE credentials
+  - `url` - The STUN/TURN server URL
+  - `addr` - The network address to bind to
+  
+  **Returns:** A unique `net.PacketConn` for this ufrag/URL combination
+</ParamField>
+
+<ParamField path="UDPMux methods" type="inherited">
+  The Universal Mux also implements all `UDPMux` interface methods:
+  - `GetConn(ufrag string, addr net.Addr) (net.PacketConn, error)`
+  - `RemoveConnByUfrag(ufrag string)`
+  - `GetListenAddresses() []net.Addr`
+  - `Close() error`
+  
+  See [UDP Mux documentation](/api/udp-mux) for details.
+</ParamField>
+
+## UniversalUDPMuxDefault
+
+`UniversalUDPMuxDefault` is the default implementation that wraps a `UDPMuxDefault` instance and adds STUN/TURN handling.
+
+### Creating a UniversalUDPMuxDefault
+
+```go
+func NewUniversalUDPMuxDefault(params UniversalUDPMuxParams) *UniversalUDPMuxDefault
+```
+
+Creates a new Universal UDP mux with the specified parameters.
+
+### UniversalUDPMuxParams
+
+<ParamField path="Logger" type="logging.LeveledLogger">
+  Logger instance for the mux. If nil, a default logger will be created.
+</ParamField>
+
+<ParamField path="UDPConn" type="net.PacketConn" required>
+  The UDP connection to multiplex. This connection will be wrapped to intercept STUN responses.
+</ParamField>
+
+<ParamField path="XORMappedAddrCacheTTL" type="time.Duration">
+  Time-to-live for cached XOR-mapped addresses. After this duration, a new STUN request will be sent.
+  
+  **Default:** 25 seconds
+</ParamField>
+
+<ParamField path="Net" type="transport.Net">
+  Network transport interface. Used for network operations.
+</ParamField>
+
+### Example: Basic Universal Mux
+
+<CodeGroup>
+```go Basic Usage
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create a UDP connection
+    conn, err := net.ListenUDP("udp", &net.UDPAddr{
+        IP:   net.ParseIP("0.0.0.0"),
+        Port: 8443,
+    })
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create Universal UDP mux
+    mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn: conn,
+    })
+    defer mux.Close()
+    
+    // Discover server reflexive address
+    stunAddr, _ := net.ResolveUDPAddr("udp", "stun.l.google.com:19302")
+    xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+    if err != nil {
+        panic(err)
+    }
+    
+    println("Server reflexive address:", xorAddr.String())
+}
+```
+
+```go With Multiple STUN Servers
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    conn, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8443})
+    
+    mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn:               conn,
+        XORMappedAddrCacheTTL: 30 * time.Second,
+    })
+    defer mux.Close()
+    
+    // Query multiple STUN servers
+    stunServers := []string{
+        "stun.l.google.com:19302",
+        "stun1.l.google.com:19302",
+        "stun2.l.google.com:19302",
+    }
+    
+    for _, server := range stunServers {
+        stunAddr, _ := net.ResolveUDPAddr("udp", server)
+        xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+        if err != nil {
+            println("Failed to get address from", server, ":", err.Error())
+            continue
+        }
+        println(server, "returned:", xorAddr.String())
+    }
+}
+```
+
+```go With Custom Cache TTL
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+    "github.com/pion/logging"
+)
+
+func main() {
+    conn, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8443})
+    
+    loggerFactory := logging.NewDefaultLoggerFactory()
+    logger := loggerFactory.NewLogger("universal-mux")
+    
+    mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn:               conn,
+        Logger:                logger,
+        XORMappedAddrCacheTTL: 60 * time.Second, // Cache for 1 minute
+    })
+    defer mux.Close()
+    
+    stunAddr, _ := net.ResolveUDPAddr("udp", "stun.l.google.com:19302")
+    
+    // First call - sends STUN request
+    xorAddr1, _ := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+    println("First call:", xorAddr1.String())
+    
+    // Second call - returns cached result (within TTL)
+    xorAddr2, _ := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+    println("Second call (cached):", xorAddr2.String())
+}
+```
+</CodeGroup>
+
+## How It Works
+
+### Packet Flow
+
+1. **Outgoing STUN Requests**: When `GetXORMappedAddr` is called, the mux sends a STUN binding request to the specified server and tracks the transaction.
+
+2. **Incoming STUN Responses**: The wrapped UDP connection intercepts incoming packets. If a packet is a STUN response with an XOR-mapped address attribute from a known server, it's processed separately.
+
+3. **Address Caching**: XOR-mapped addresses are cached per STUN server address with a TTL. Subsequent requests within the TTL return the cached address.
+
+4. **Regular Packets**: Non-STUN packets or STUN packets not matching tracked transactions are passed to the underlying UDPMux for normal processing.
+
+### Connection Uniqueness
+
+The `GetConnForURL` method ensures connection uniqueness by concatenating the ufrag with the server URL:
+
+```go
+// Internally creates a unique key: "myufrag" + "stun:stun.example.com:3478"
+conn, err := mux.GetConnForURL("myufrag", "stun:stun.example.com:3478", addr)
+```
+
+This allows the same ufrag to communicate with multiple STUN/TURN servers without packet routing conflicts.
+
+## Address Discovery
+
+### Server Reflexive Addresses
+
+Server reflexive addresses are your public IP and port as seen by a STUN server, essential for NAT traversal:
+
+```go
+stunAddr, _ := net.ResolveUDPAddr("udp", "stun.l.google.com:19302")
+xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+if err != nil {
+    // Handle timeout or network error
+}
+
+publicIP := xorAddr.IP
+publicPort := xorAddr.Port
+```
+
+### Caching Behavior
+
+<Info>
+**Cache Management**
+
+- Each STUN server address has its own cache entry
+- Cached addresses expire after `XORMappedAddrCacheTTL`
+- Expired entries trigger new STUN requests automatically
+- If a request is already in flight, subsequent calls wait for the same response
+- Cache is cleared when the mux is closed
+</Info>
+
+### Multiple STUN Servers
+
+Querying multiple STUN servers can help verify your public address and provide redundancy:
+
+```go
+stunServers := []string{
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+}
+
+addresses := make(map[string]*stun.XORMappedAddress)
+
+for _, server := range stunServers {
+    stunAddr, _ := net.ResolveUDPAddr("udp", server)
+    if xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second); err == nil {
+        addresses[server] = xorAddr
+    }
+}
+```
+
+## Combining Universal Mux Capabilities
+
+The Universal Mux combines three key capabilities:
+
+### 1. UDP Multiplexing
+
+All standard UDP mux features are available:
+
+```go
+// Get a regular multiplexed connection
+conn, err := mux.GetConn("myufrag", mux.LocalAddr())
+```
+
+### 2. Server Reflexive Discovery
+
+Automatic discovery and caching of public addresses:
+
+```go
+// Discover public address
+xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+```
+
+### 3. URL-Scoped Connections
+
+Unique connections per STUN/TURN server:
+
+```go
+// Connection specific to this ufrag and STUN server
+conn, err := mux.GetConnForURL("myufrag", "stun:stun.example.com:3478", addr)
+```
+
+## When to Use Universal Mux
+
+Use Universal UDP Mux when:
+
+- **NAT Traversal Required**: Your application needs to discover its public IP address for NAT traversal
+- **Multiple STUN Servers**: You want to use multiple STUN servers with a single UDP port
+- **Server Reflexive Candidates**: Your ICE agent needs to gather server reflexive candidates
+- **Automatic Address Management**: You want automatic caching and management of discovered addresses
+- **TURN Integration**: You plan to add TURN support in the future (relay functionality)
+
+Use standard UDP Mux when:
+
+- You only need host candidates (no NAT traversal)
+- You're implementing your own STUN client logic
+- You want minimal overhead and don't need STUN integration
+
+## Best Practices
+
+1. **Cache TTL Configuration**: Set an appropriate TTL based on your network stability:
+   ```go
+   ice.UniversalUDPMuxParams{
+       XORMappedAddrCacheTTL: 30 * time.Second, // Stable network
+   }
+   ```
+
+2. **Timeout Handling**: Use reasonable timeouts for STUN requests:
+   ```go
+   // 5 seconds is typically sufficient
+   xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+   if err != nil {
+       // Fallback to host candidates only
+   }
+   ```
+
+3. **Error Recovery**: Handle STUN failures gracefully:
+   ```go
+   xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+   if err != nil {
+       log.Println("STUN discovery failed:", err)
+       // Continue with host candidates only
+   }
+   ```
+
+4. **Resource Cleanup**: Always close the mux when done:
+   ```go
+   mux := ice.NewUniversalUDPMuxDefault(params)
+   defer mux.Close()
+   ```
+
+5. **STUN Server Selection**: Use reliable, geographically diverse STUN servers:
+   ```go
+   stunServers := []string{
+       "stun.l.google.com:19302",       // Google US
+       "stun.cloudflare.com:3478",     // Cloudflare
+       "stun.nextcloud.com:443",       // Nextcloud
+   }
+   ```
+
+## Integration with ICE Agent
+
+```go
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create Universal Mux
+    conn, _ := net.ListenUDP("udp", &net.UDPAddr{Port: 8443})
+    mux := ice.NewUniversalUDPMuxDefault(ice.UniversalUDPMuxParams{
+        UDPConn: conn,
+    })
+    defer mux.Close()
+    
+    // Configure ICE agent with Universal Mux
+    agent, err := ice.NewAgent(&ice.AgentConfig{
+        NetworkTypes: []ice.NetworkType{
+            ice.NetworkTypeUDP4,
+            ice.NetworkTypeUDP6,
+        },
+        UDPMux: mux,
+        // STUN servers for server reflexive candidates
+        Urls: []ice.URL{
+            {Scheme: ice.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+        },
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer agent.Close()
+    
+    // The agent will automatically use GetXORMappedAddr for server reflexive candidates
+    // and GetConnForURL for STUN server communication
+}
+```
+
+## Limitations and Future Work
+
+<Note>
+**Current Limitations**
+
+1. **TURN Support**: The `GetRelayedAddr` method is not yet implemented. TURN relay functionality is planned for a future release.
+
+2. **IPv6 Zones**: IPv6 zone information may not be fully preserved in some address conversions.
+
+3. **Concurrent Requests**: Multiple concurrent requests to the same STUN server are serialized to avoid duplicate requests.
+</Note>
+
+## Error Handling
+
+Common errors you may encounter:
+
+```go
+// Timeout waiting for STUN response
+xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+if errors.Is(err, ice.ErrXORMappedAddrTimeout) {
+    // STUN server didn't respond in time
+}
+
+// STUN server not tracked
+if errors.Is(err, ice.ErrNoXorAddrMapping) {
+    // Internal error - should not happen in normal operation
+}
+
+// TURN not implemented
+relayAddr, err := mux.GetRelayedAddr(turnAddr, 5*time.Second)
+if errors.Is(err, ice.ErrNotImplemented) {
+    // TURN relay is not yet supported
+}
+
+// Mux closed
+xorAddr, err := mux.GetXORMappedAddr(stunAddr, 5*time.Second)
+if errors.Is(err, io.ErrClosedPipe) {
+    // Mux was closed
+}
+```
+
+## Performance Considerations
+
+- **Memory**: Each STUN server address adds a small cache entry (~100 bytes)
+- **Network**: STUN requests are small (~20-60 bytes) and responses are similar
+- **Latency**: First address discovery adds 1 RTT to the STUN server
+- **Cache Hits**: Subsequent requests within TTL have no additional latency
+
+## Related
+
+- [UDP Mux](/api/udp-mux) - Standard UDP connection multiplexing
+- [TCP Mux](/api/tcp-mux) - TCP connection multiplexing
+- [Agent Options](/api/agent-options) - Using muxes with ICE agents
+- [NAT Traversal](/guides/nat-traversal) - Understanding STUN and NAT traversal

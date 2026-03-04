@@ -1,0 +1,242 @@
+---
+title: TCP Support
+description: Using TCP candidates for ICE connectivity with active, passive, and simultaneous-open modes
+---
+
+Pion ICE provides comprehensive support for TCP candidates in addition to UDP, enabling connectivity in network environments where UDP traffic is blocked or restricted. TCP support follows [RFC 6544](https://tools.ietf.org/html/rfc6544).
+
+## TCP Candidate Types
+
+There are three types of TCP candidates, defined by the `TCPType` enum:
+
+```go tcptype.go
+type TCPType int
+
+const (
+    // TCPTypeUnspecified is the default value. For example UDP candidates do not
+    // need this field.
+    TCPTypeUnspecified TCPType = iota
+    // TCPTypeActive is active TCP candidate, which initiates TCP connections.
+    TCPTypeActive
+    // TCPTypePassive is passive TCP candidate, only accepts TCP connections.
+    TCPTypePassive
+    // TCPTypeSimultaneousOpen is like active and passive at the same time.
+    TCPTypeSimultaneousOpen
+)
+```
+
+### Active TCP Candidates
+
+Active TCP candidates initiate outbound connections to remote passive candidates. The `activeTCPConn` type handles connection establishment:
+
+```go
+local, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "tcp",
+    Address:   "192.168.1.100",
+    Port:      9000,
+    Component: 1,
+    TCPType:   ice.TCPTypeActive,
+})
+```
+
+<Info>
+The ICE agent automatically ignores remote candidates with `TCPTypeActive` since they don't accept inbound connections.
+</Info>
+
+### Passive TCP Candidates
+
+Passive TCP candidates listen for incoming connections. They are the server-side counterpart to active candidates:
+
+```go
+local, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "tcp",
+    Address:   "192.168.1.100",
+    Port:      9000,
+    Component: 1,
+    TCPType:   ice.TCPTypePassive,
+})
+```
+
+When a passive TCP candidate is added to a remote agent with active TCP support enabled (default), the agent automatically attempts to establish a connection:
+
+```go agent.go
+// From agent.go:1118
+if !a.disableActiveTCP && cand.TCPType() == TCPTypePassive {
+    // Automatically establish active connection
+}
+```
+
+### Simultaneous-Open (SO) Candidates
+
+SO candidates can both initiate and accept connections, useful for NAT traversal scenarios where both peers attempt to connect simultaneously:
+
+```go
+local, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "tcp",
+    Address:   "192.168.1.100",
+    Port:      9000,
+    Component: 1,
+    TCPType:   ice.TCPTypeSimultaneousOpen,
+})
+```
+
+## TCP Packet Framing
+
+TCP is a stream-oriented protocol, so Pion ICE implements packet framing according to [RFC 4571](https://tools.ietf.org/html/rfc4571#section-2). Each packet is prefixed with a 2-byte length header:
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+-----------------------------------------------------------------
+|             LENGTH            |  RTP or RTCP packet ...       |
+-----------------------------------------------------------------
+```
+
+The framing is handled automatically by `readStreamingPacket` and `writeStreamingPacket` functions:
+
+```go tcp_mux.go
+func readStreamingPacket(conn net.Conn, buf []byte) (int, error) {
+    header := make([]byte, streamingPacketHeaderLen)
+    // Read 2-byte length header
+    // Read packet data based on length
+}
+
+func writeStreamingPacket(conn net.Conn, buf []byte) (int, error) {
+    bufCopy := make([]byte, streamingPacketHeaderLen+len(buf))
+    binary.BigEndian.PutUint16(bufCopy, uint16(len(buf)))
+    copy(bufCopy[2:], buf)
+    // Write framed packet
+}
+```
+
+## TCP Multiplexing
+
+The `tcpPacketConn` type manages multiple TCP connections to different remote addresses, providing a packet-oriented interface over stream-based TCP:
+
+```go tcp_packet_conn.go
+type tcpPacketConn struct {
+    params *tcpPacketParams
+    conns  map[string]net.Conn  // Indexed by remote address
+    recvChan chan streamingPacket
+}
+```
+
+### Adding Connections
+
+Connections are added dynamically as peers connect:
+
+```go
+func (t *tcpPacketConn) AddConn(conn net.Conn, firstPacketData []byte) error {
+    // Optional write buffering
+    if t.params.WriteBuffer > 0 {
+        conn = newBufferedConn(conn, t.params.WriteBuffer, t.params.Logger)
+    }
+    t.conns[conn.RemoteAddr().String()] = conn
+    // Start read goroutine
+}
+```
+
+<Note>
+The TCP packet connection supports optional write buffering via `bufferedConn` to optimize small writes.
+</Note>
+
+### Configuration Parameters
+
+```go
+type tcpPacketParams struct {
+    ReadBuffer    int               // Receive channel buffer size
+    LocalAddr     net.Addr          // Local address for the listener
+    Logger        logging.LeveledLogger
+    WriteBuffer   int               // Per-connection write buffer size
+    AliveDuration time.Duration     // Timeout for idle connections
+}
+```
+
+## Active TCP Connection Lifecycle
+
+The `activeTCPConn` type manages outbound TCP connections with buffered I/O:
+
+```go active_tcp.go
+type activeTCPConn struct {
+    readBuffer, writeBuffer *packetio.Buffer
+    localAddr, remoteAddr   atomic.Value
+    conn                    atomic.Value  // stores net.Conn
+    closed                  atomic.Bool
+}
+```
+
+### Connection Establishment
+
+```go
+conn := newActiveTCPConn(ctx, localAddress, remoteAddress, log)
+// Connection is established in background goroutine
+// Buffers allow immediate writes even if connection is still dialing
+```
+
+<Warning>
+The `RemoteAddr()` method may return `:0` before the connection completes. Check connection status before relying on the remote address.
+</Warning>
+
+## When to Use TCP vs UDP
+
+### Use TCP Candidates When:
+
+- **UDP is blocked**: Corporate firewalls or restrictive networks
+- **Reliable delivery needed**: Application requires in-order, reliable delivery at the transport layer
+- **Firewall traversal**: TCP is more likely to traverse certain enterprise firewalls
+- **Port restrictions**: Only TCP ports are available
+
+### Use UDP Candidates When:
+
+- **Low latency is critical**: UDP has less overhead and no head-of-line blocking
+- **Packet loss is acceptable**: Real-time media can handle some loss
+- **Network supports it**: Most internet connections allow UDP
+- **Best performance**: UDP is preferred for WebRTC and real-time applications
+
+<Tip>
+Pion ICE can gather both TCP and UDP candidates simultaneously. The ICE agent will automatically select the best path based on connectivity checks and candidate pair priorities.
+</Tip>
+
+## Configuration Example
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    NetworkTypes: []ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+        ice.NetworkTypeTCP4,  // Enable TCP IPv4
+        ice.NetworkTypeTCP6,  // Enable TCP IPv6
+    },
+})
+```
+
+## Disabling Active TCP
+
+If you want to prevent the agent from establishing outbound TCP connections:
+
+```go
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    DisableActiveTCP: true,  // Only accept incoming TCP connections
+})
+```
+
+<Info>
+With `DisableActiveTCP: true`, your agent will only gather passive and simultaneous-open TCP candidates, not active ones.
+</Info>
+
+## SDP Representation
+
+TCP candidates are represented in SDP with the `tcptype` extension:
+
+```
+a=candidate:1 1 tcp 2105524479 192.168.1.100 9000 typ host tcptype active
+a=candidate:2 1 tcp 2105524478 192.168.1.100 9001 typ host tcptype passive
+a=candidate:3 1 tcp 2105524477 192.168.1.100 9002 typ host tcptype so
+```
+
+## Reference
+
+- **Active TCP**: `active_tcp.go:18` - activeTCPConn implementation
+- **TCP Packet Conn**: `tcp_packet_conn.go:81` - tcpPacketConn multiplexer  
+- **TCP Types**: `tcptype.go:10` - TCPType enum definition
+- **Streaming Packets**: `tcp_mux.go:436` - readStreamingPacket and writeStreamingPacket

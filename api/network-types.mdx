@@ -1,0 +1,259 @@
+---
+title: 'NetworkType'
+description: 'Network protocol and IP version enumeration'
+---
+
+## Overview
+
+The `NetworkType` enum represents the combination of transport protocol (UDP or TCP) and IP version (IPv4 or IPv6) used for ICE candidates.
+
+## Type Definition
+
+```go
+type NetworkType int
+```
+
+## Types
+
+### NetworkTypeUDP4
+
+```go
+const NetworkTypeUDP4 NetworkType = iota + 1
+```
+
+UDP over IPv4. This is the most common network type for ICE.
+
+### NetworkTypeUDP6
+
+```go
+const NetworkTypeUDP6
+```
+
+UDP over IPv6.
+
+### NetworkTypeTCP4
+
+```go
+const NetworkTypeTCP4
+```
+
+TCP over IPv4. Used for ICE-TCP.
+
+### NetworkTypeTCP6
+
+```go
+const NetworkTypeTCP6
+```
+
+TCP over IPv6. Used for ICE-TCP.
+
+## Methods
+
+### String
+
+```go
+func (t NetworkType) String() string
+```
+
+Returns the string representation of the network type.
+
+**Returns:**
+- `"udp4"` for NetworkTypeUDP4
+- `"udp6"` for NetworkTypeUDP6
+- `"tcp4"` for NetworkTypeTCP4
+- `"tcp6"` for NetworkTypeTCP6
+
+### NetworkShort
+
+```go
+func (t NetworkType) NetworkShort() string
+```
+
+Returns the short protocol name without IP version.
+
+**Returns:**
+- `"udp"` for UDP types
+- `"tcp"` for TCP types
+
+### IsUDP
+
+```go
+func (t NetworkType) IsUDP() bool
+```
+
+Returns true if the network type uses UDP (UDP4 or UDP6).
+
+### IsTCP
+
+```go
+func (t NetworkType) IsTCP() bool
+```
+
+Returns true if the network type uses TCP (TCP4 or TCP6).
+
+### IsIPv4
+
+```go
+func (t NetworkType) IsIPv4() bool
+```
+
+Returns true if the network type uses IPv4 (UDP4 or TCP4).
+
+### IsIPv6
+
+```go
+func (t NetworkType) IsIPv6() bool
+```
+
+Returns true if the network type uses IPv6 (UDP6 or TCP6).
+
+### IsReliable
+
+```go
+func (t NetworkType) IsReliable() bool
+```
+
+Returns true if the transport is reliable (TCP).
+
+**Returns:**
+- `true` for TCP types
+- `false` for UDP types
+
+## Usage Examples
+
+<CodeGroup>
+```go Configure Network Types
+// Only use UDP over IPv4 and IPv6
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+    }),
+)
+```
+
+```go IPv4 Only
+// Restrict to IPv4 only
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeTCP4,
+    }),
+)
+```
+
+```go TCP Only
+// Use only TCP (ICE-TCP)
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeTCP4,
+        ice.NetworkTypeTCP6,
+    }),
+)
+```
+
+```go Type Checking
+networkType := ice.NetworkTypeUDP4
+
+if networkType.IsUDP() {
+    fmt.Println("Using UDP protocol")
+}
+
+if networkType.IsIPv4() {
+    fmt.Println("Using IPv4")
+}
+
+if !networkType.IsReliable() {
+    fmt.Println("Unreliable transport")
+}
+
+fmt.Printf("Full type: %s\n", networkType.String())        // "udp4"
+fmt.Printf("Protocol: %s\n", networkType.NetworkShort())  // "udp"
+```
+</CodeGroup>
+
+## Default Behavior
+
+When no network types are specified, all four types are enabled by default:
+
+```go
+// Default: All network types enabled
+agent, _ := ice.NewAgentWithOptions()
+// Equivalent to:
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+        ice.NetworkTypeTCP4,
+        ice.NetworkTypeTCP6,
+    }),
+)
+```
+
+## ICE-TCP Considerations
+
+When using TCP network types, you may need to configure TCP-specific options:
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeTCP4,
+        ice.NetworkTypeTCP6,
+    }),
+    // TCP candidates have lower priority by default
+    ice.WithTCPPriorityOffset(27), // Default offset
+    
+    // Optionally disable active TCP candidates
+    ice.WithDisableActiveTCP(),
+    
+    // Use TCP multiplexer for passive candidates
+    ice.WithTCPMux(tcpMux),
+)
+```
+
+## Filtering Network Types
+
+You can also filter at the IP level:
+
+```go
+// Accept only IPv4 addresses
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithIPFilter(func(ip net.IP) bool {
+        return ip.To4() != nil
+    }),
+)
+```
+
+## Address Rewrite Rules
+
+Network types can be used to scope address rewrite rules:
+
+```go
+import "github.com/pion/ice/v4"
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Networks: []ice.NetworkType{
+                ice.NetworkTypeUDP4, // Only for UDP4
+            },
+        },
+    ),
+)
+```
+
+## Matrix of Characteristics
+
+| Network Type | Protocol | IP Version | Reliable | String |
+|--------------|----------|------------|----------|--------|
+| NetworkTypeUDP4 | UDP | IPv4 | No | "udp4" |
+| NetworkTypeUDP6 | UDP | IPv6 | No | "udp6" |
+| NetworkTypeTCP4 | TCP | IPv4 | Yes | "tcp4" |
+| NetworkTypeTCP6 | TCP | IPv6 | Yes | "tcp6" |
+
+## Related
+
+- [Agent Options](/api/agent-options) - WithNetworkTypes configuration
+- [Candidate Types](/api/candidate-types) - ICE candidate types
+- [TCPMux](/api/tcp-mux) - TCP multiplexing for ICE-TCP

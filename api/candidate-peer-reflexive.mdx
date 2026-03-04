@@ -1,0 +1,373 @@
+---
+title: "Peer Reflexive Candidates"
+description: "Create and configure peer reflexive candidates discovered during ICE connectivity checks"
+---
+
+## Overview
+
+Peer reflexive candidates (prflx) are discovered dynamically during ICE connectivity checks rather than being gathered upfront. They represent NAT bindings that are learned when receiving connectivity checks from the remote peer.
+
+## CandidatePeerReflexive
+
+A peer reflexive candidate represents a public address binding discovered through connectivity checks.
+
+```go candidate_peer_reflexive.go
+type CandidatePeerReflexive struct {
+    candidateBase
+}
+```
+
+Peer reflexive candidates embed `candidateBase` which provides common functionality including priority calculation, marshaling, and traffic tracking.
+
+## Creating Peer Reflexive Candidates
+
+### NewCandidatePeerReflexive
+
+Creates a new peer reflexive candidate from the provided configuration.
+
+```go
+func NewCandidatePeerReflexive(config *CandidatePeerReflexiveConfig) (*CandidatePeerReflexive, error)
+```
+
+<ParamField path="config" type="*CandidatePeerReflexiveConfig" required>
+  Configuration for the peer reflexive candidate.
+</ParamField>
+
+Returns the created `CandidatePeerReflexive` or an error if the configuration is invalid (e.g., invalid IP address).
+
+## CandidatePeerReflexiveConfig
+
+Configuration structure for creating peer reflexive candidates.
+
+```go candidate_peer_reflexive.go
+type CandidatePeerReflexiveConfig struct {
+    CandidateID string
+    Network     string
+    Address     string
+    Port        int
+    Component   uint16
+    Priority    uint32
+    Foundation  string
+    RelAddr     string
+    RelPort     int
+}
+```
+
+### Configuration Fields
+
+<ParamField path="CandidateID" type="string">
+  Unique identifier for the candidate. If empty, a UUID will be automatically generated.
+</ParamField>
+
+<ParamField path="Network" type="string" required>
+  Network protocol: "udp", "tcp", "udp4", "udp6", "tcp4", or "tcp6".
+</ParamField>
+
+<ParamField path="Address" type="string" required>
+  The IP address observed in the connectivity check (the reflexive address).
+</ParamField>
+
+<ParamField path="Port" type="int" required>
+  Port number of the observed address.
+</ParamField>
+
+<ParamField path="Component" type="uint16" required>
+  Component identifier. Use `ComponentRTP` (1) for RTP or `ComponentRTCP` (2) for RTCP.
+</ParamField>
+
+<ParamField path="Priority" type="uint32">
+  Custom priority value. If 0, priority will be calculated automatically. Peer reflexive candidates have a type preference of 110.
+</ParamField>
+
+<ParamField path="Foundation" type="string">
+  Custom foundation string. If empty, foundation will be calculated as a CRC32 checksum of the candidate type, address, and network type.
+</ParamField>
+
+<ParamField path="RelAddr" type="string" required>
+  The base (local) IP address that received the connectivity check.
+</ParamField>
+
+<ParamField path="RelPort" type="int" required>
+  The port of the base (local) address.
+</ParamField>
+
+## Examples
+
+### Creating a Peer Reflexive Candidate
+
+```go
+candidate, err := ice.NewCandidatePeerReflexive(&ice.CandidatePeerReflexiveConfig{
+    Network:   "udp",
+    Address:   "203.0.113.50",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",
+    RelPort:   50000,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+// Output: candidate:842163049 1 udp 1845493759 203.0.113.50 54321 typ prflx raddr 192.168.1.100 rport 50000
+```
+
+### Accessing Candidate Properties
+
+```go
+candidate, _ := ice.NewCandidatePeerReflexive(&ice.CandidatePeerReflexiveConfig{
+    Network:   "udp",
+    Address:   "203.0.113.50",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",
+    RelPort:   50000,
+})
+
+fmt.Println("Type:", candidate.Type())
+fmt.Println("Priority:", candidate.Priority())
+fmt.Println("Address:", candidate.Address())
+fmt.Println("Port:", candidate.Port())
+
+relatedAddr := candidate.RelatedAddress()
+if relatedAddr != nil {
+    fmt.Printf("Base: %s:%d\n", relatedAddr.Address, relatedAddr.Port)
+}
+
+// Output:
+// Type: prflx
+// Priority: 1845493759
+// Address: 203.0.113.50
+// Port: 54321
+// Base: 192.168.1.100:50000
+```
+
+### Creating an IPv6 Peer Reflexive Candidate
+
+```go
+candidate, err := ice.NewCandidatePeerReflexive(&ice.CandidatePeerReflexiveConfig{
+    Network:   "udp6",
+    Address:   "2001:db8::50",
+    Port:      54321,
+    Component: ice.ComponentRTP,
+    RelAddr:   "fe80::1",
+    RelPort:   50000,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Network Type:", candidate.NetworkType())
+// Output: Network Type: udp6
+```
+
+## Discovery Process
+
+Peer reflexive candidates are not gathered upfront like host or server reflexive candidates. Instead, they are discovered dynamically during the ICE connectivity check phase:
+
+### How Discovery Works
+
+1. **Connectivity Check Sent** - The remote peer sends a STUN Binding Request from one of its candidates
+2. **NAT Creates Binding** - If the remote peer is behind a NAT, the NAT creates a new binding for the outgoing packet
+3. **Request Received** - The local agent receives the request and observes the source IP and port
+4. **Address Comparison** - If the observed source address differs from the remote candidate's address in the request, a peer reflexive candidate is created
+5. **Candidate Added** - The new peer reflexive candidate is added to the remote candidate list and checked
+
+### Example Discovery Scenario
+
+```go
+// During ICE connectivity checks, the agent receives a STUN request
+// from source address 203.0.113.50:54321
+// but the request contains a candidate with address 192.168.2.5:40000
+
+// The ICE agent automatically creates a peer reflexive candidate:
+prflxCandidate, _ := ice.NewCandidatePeerReflexive(&ice.CandidatePeerReflexiveConfig{
+    Network:   "udp",
+    Address:   "203.0.113.50",  // Observed source address
+    Port:      54321,            // Observed source port
+    Component: ice.ComponentRTP,
+    RelAddr:   "192.168.1.100",  // Local interface that received it
+    RelPort:   50000,
+})
+
+// This candidate is immediately added to the checklist
+```
+
+## Priority Calculation
+
+Peer reflexive candidates have a type preference of 110:
+
+```
+priority = (2^24 * 110) + (2^8 * local-preference) + (256 - component)
+```
+
+This priority is:
+- Higher than server reflexive candidates (100)
+- Higher than relay candidates (0)
+- Lower than host candidates (126)
+
+The higher priority compared to server reflexive candidates reflects that peer reflexive candidates often represent better network paths discovered during actual connectivity attempts.
+
+## When Peer Reflexive Candidates Appear
+
+Peer reflexive candidates are discovered in several scenarios:
+
+### Symmetric NAT Scenario
+
+```
+Peer A (behind Symmetric NAT)     →     Peer B
+  Local: 192.168.1.100:50000
+  STUN discovered: 203.0.113.1:60001
+  
+Peer A sends connectivity check to Peer B
+  → NAT allocates NEW binding: 203.0.113.1:60002
+  
+Peer B receives check from 203.0.113.1:60002
+  → Creates peer reflexive candidate for this address
+```
+
+<Note>
+With symmetric NATs, each destination gets a unique binding. Server reflexive candidates show the binding to the STUN server, while peer reflexive candidates show the binding to the actual peer.
+</Note>
+
+### Hair-Pinning NAT
+
+When both peers are behind the same NAT:
+
+```
+Peer A                    NAT                    Peer B
+192.168.1.100:50000  →  203.0.113.1:60000  ←  192.168.1.101:50001
+
+Peer A sends check using NAT's public address
+  → NAT routes internally (hair-pinning)
+  → Peer B sees Peer A's local address as peer reflexive
+```
+
+## Use Cases
+
+Peer reflexive candidates are particularly useful when:
+
+- Working with symmetric NATs that allocate different bindings per destination
+- The STUN server binding differs from the peer-to-peer binding
+- Hair-pinning occurs with peers behind the same NAT
+- Network path changes during the connection process
+- Additional NAT layers exist between STUN server and peer
+
+## Related Address
+
+The related address for a peer reflexive candidate is the base (host) candidate that received the connectivity check:
+
+```go
+relatedAddr := candidate.RelatedAddress()
+if relatedAddr != nil {
+    fmt.Printf("Base address: %s:%d\n", relatedAddr.Address, relatedAddr.Port)
+}
+```
+
+This information helps in:
+- Understanding the network topology
+- Debugging connectivity issues
+- Analyzing NAT behavior
+- Troubleshooting symmetric NAT scenarios
+
+## Connection Characteristics
+
+**Advantages:**
+- Often represents better network path than server reflexive
+- Discovered during actual peer-to-peer attempts
+- Essential for symmetric NAT traversal
+- No dependency on STUN servers after discovery
+- Direct peer-to-peer connectivity
+
+**Disadvantages:**
+- Not available during candidate gathering
+- Discovered only during connectivity checks
+- Adds complexity to ICE state machine
+- May increase connection establishment time
+
+## Comparison with Server Reflexive
+
+| Aspect | Peer Reflexive | Server Reflexive |
+|--------|----------------|------------------|
+| Discovery Time | During connectivity checks | During gathering phase |
+| Discovery Method | From peer's STUN requests | From STUN server responses |
+| Priority | 110 (higher) | 100 (lower) |
+| Use Case | Symmetric NAT scenarios | General NAT traversal |
+| Availability | After checks start | Before checks start |
+
+## Best Practices
+
+### Automatic Discovery
+
+Peer reflexive candidates are typically discovered automatically by the ICE agent. You don't usually need to create them manually:
+
+```go
+// The ICE agent handles this internally during connectivity checks
+// You only need to configure the agent properly
+```
+
+### Manual Creation
+
+In advanced scenarios, you might create peer reflexive candidates manually when implementing custom ICE logic:
+
+```go
+// Custom ICE implementation
+func handleInboundCheck(request *stun.Message, localAddr net.Addr, 
+    srcAddr net.Addr) {
+    
+    // Extract priority from STUN request
+    var priority stun.Priority
+    priority.GetFrom(request)
+    
+    // Create peer reflexive candidate if source differs from 
+    // announced candidate
+    if srcAddr.String() != announcedAddr.String() {
+        candidate, err := ice.NewCandidatePeerReflexive(
+            &ice.CandidatePeerReflexiveConfig{
+                Network:   "udp",
+                Address:   srcAddr.IP.String(),
+                Port:      srcAddr.Port,
+                Component: ice.ComponentRTP,
+                Priority:  uint32(priority),
+                RelAddr:   localAddr.IP.String(),
+                RelPort:   localAddr.Port,
+            },
+        )
+        if err == nil {
+            addRemoteCandidate(candidate)
+        }
+    }
+}
+```
+
+<Note>
+Most applications don't need to manually create peer reflexive candidates. The ICE agent discovers and manages them automatically during connectivity checks.
+</Note>
+
+## Debugging
+
+When debugging peer reflexive candidates:
+
+```go
+fmt.Printf("Candidate Type: %s\n", candidate.Type())
+fmt.Printf("Observed Address: %s:%d\n", 
+    candidate.Address(), candidate.Port())
+fmt.Printf("Base Address: %s:%d\n", 
+    candidate.RelatedAddress().Address, 
+    candidate.RelatedAddress().Port)
+fmt.Printf("Priority: %d\n", candidate.Priority())
+fmt.Printf("Foundation: %s\n", candidate.Foundation())
+```
+
+This information helps identify:
+- NAT mapping behavior
+- Whether symmetric NAT is in use
+- The relationship between local and public addresses
+- Priority ordering in candidate pair selection
+
+## See Also
+
+- [Candidate Types](/api/candidate-types) - Core candidate interfaces and types
+- [Server Reflexive Candidates](/api/candidate-server-reflexive) - STUN-based discovery
+- [Host Candidates](/api/candidate-host) - Direct local interface candidates
+- [Relay Candidates](/api/candidate-relay) - TURN-based relay candidates

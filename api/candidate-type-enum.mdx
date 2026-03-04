@@ -1,0 +1,260 @@
+---
+title: 'CandidateType'
+description: 'ICE candidate type enumeration'
+---
+
+## Overview
+
+The `CandidateType` enum represents the type of ICE candidate as defined in RFC 5245. Each type indicates how the candidate address was obtained and affects its priority in the connection establishment process.
+
+## Type Definition
+
+```go
+type CandidateType byte
+```
+
+## Types
+
+### CandidateTypeHost
+
+```go
+const CandidateTypeHost CandidateType = iota + 1
+```
+
+A host candidate represents a local network address obtained directly from a network interface.
+
+**Characteristics:**
+- Highest priority (preference: 126)
+- No STUN/TURN servers required
+- Direct peer-to-peer connection
+- Best latency and bandwidth
+
+### CandidateTypeServerReflexive
+
+```go
+const CandidateTypeServerReflexive
+```
+
+A server reflexive (srflx) candidate is discovered by sending a STUN Binding Request to a STUN server, which returns the public address as seen from the Internet.
+
+**Characteristics:**
+- Medium-high priority (preference: 100)
+- Requires STUN server
+- Reveals public NAT address
+- Good for NAT traversal
+
+**Short form:** `"srflx"`
+
+### CandidateTypePeerReflexive
+
+```go
+const CandidateTypePeerReflexive
+```
+
+A peer reflexive (prflx) candidate is discovered from the source address of a STUN Binding Request received from the peer.
+
+**Characteristics:**
+- Medium priority (preference: 110)
+- Discovered during connectivity checks
+- Created automatically by the ICE agent
+- Not gathered explicitly
+
+**Short form:** `"prflx"`
+
+### CandidateTypeRelay
+
+```go
+const CandidateTypeRelay
+```
+
+A relay candidate is obtained by allocating an address on a TURN relay server. All media flows through the relay.
+
+**Characteristics:**
+- Lowest priority (preference: 0)
+- Requires TURN server
+- Guaranteed connectivity
+- Higher latency and bandwidth cost
+- Most reliable for restrictive NATs
+
+### CandidateTypeUnspecified
+
+```go
+const CandidateTypeUnspecified CandidateType = 0
+```
+
+Represents an unspecified or unknown candidate type.
+
+## Methods
+
+### String
+
+```go
+func (c CandidateType) String() string
+```
+
+Returns the string representation of the candidate type.
+
+**Returns:**
+- `"host"` for CandidateTypeHost
+- `"srflx"` for CandidateTypeServerReflexive
+- `"prflx"` for CandidateTypePeerReflexive
+- `"relay"` for CandidateTypeRelay
+- `"Unknown candidate type"` for CandidateTypeUnspecified or invalid values
+
+### Preference
+
+```go
+func (c CandidateType) Preference() uint16
+```
+
+Returns the RFC 5245 recommended preference weight for the candidate type. Higher values indicate higher priority.
+
+**Returns:**
+- `126` for CandidateTypeHost
+- `110` for CandidateTypePeerReflexive
+- `100` for CandidateTypeServerReflexive
+- `0` for CandidateTypeRelay and CandidateTypeUnspecified
+
+## Priority Order
+
+```
+1. Host (126)            ← Highest priority
+2. Peer Reflexive (110)
+3. Server Reflexive (100)
+4. Relay (0)             ← Lowest priority
+```
+
+## Usage Examples
+
+<CodeGroup>
+```go Configure Candidate Types
+// Only gather host candidates (no STUN/TURN)
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+    }),
+)
+```
+
+```go Host and Server Reflexive
+// Gather host and srflx, skip relay
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+    }),
+)
+```
+
+```go All Types (Default)
+// Gather all candidate types
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL, turnURL}),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+        ice.CandidateTypeRelay,
+    }),
+)
+```
+
+```go Type Inspection
+candidates, _ := agent.GetLocalCandidates()
+
+for _, cand := range candidates {
+    candType := cand.Type()
+    fmt.Printf("Candidate: %s\n", cand.String())
+    fmt.Printf("Type: %s\n", candType.String())
+    fmt.Printf("Preference: %d\n", candType.Preference())
+}
+```
+</CodeGroup>
+
+## Default Behavior
+
+When no candidate types are specified, all three gatherable types are enabled:
+
+```go
+// Default configuration
+agent, _ := ice.NewAgentWithOptions()
+// Equivalent to:
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+        ice.CandidateTypeRelay,
+    }),
+)
+```
+
+<Note>
+Peer reflexive candidates are never explicitly gathered. They are discovered automatically during connectivity checks and don't need to be specified in the candidate types list.
+</Note>
+
+## Server Requirements
+
+| Candidate Type | Required Servers |
+|----------------|------------------|
+| Host | None |
+| Server Reflexive | STUN server |
+| Peer Reflexive | None (discovered) |
+| Relay | TURN server |
+
+## NAT Traversal
+
+**Best case** (Direct connection):
+```
+Host ←→ Host
+```
+
+**Good case** (NAT traversal with STUN):
+```
+Host/Srflx ←→ Host/Srflx
+```
+
+**Fallback case** (TURN relay):
+```
+Host/Srflx ←→ Relay ←→ Host/Srflx
+```
+
+## Address Rewrite Rules
+
+You can specify which candidate type to use for address rewriting:
+
+```go
+import "github.com/pion/ice/v4"
+
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External:        []string{"203.0.113.10"},
+            AsCandidateType: ice.CandidateTypeServerReflexive,
+        },
+    ),
+)
+```
+
+## Acceptance Timing
+
+You can configure minimum wait times before accepting each candidate type:
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithHostAcceptanceMinWait(0),                  // Immediate
+    ice.WithSrflxAcceptanceMinWait(500 * time.Millisecond),
+    ice.WithPrflxAcceptanceMinWait(1 * time.Second),
+    ice.WithRelayAcceptanceMinWait(2 * time.Second),
+)
+```
+
+This allows the agent to wait for potentially better candidates before settling on a relay connection.
+
+## Related
+
+- [Agent Options](/api/agent-options) - WithCandidateTypes configuration
+- [Candidate Types](/api/candidate-types) - Candidate implementations
+- [Host Candidate](/api/candidate-host) - Host candidate details
+- [Server Reflexive Candidate](/api/candidate-server-reflexive) - Srflx candidate details
+- [Peer Reflexive Candidate](/api/candidate-peer-reflexive) - Prflx candidate details
+- [Relay Candidate](/api/candidate-relay) - Relay candidate details

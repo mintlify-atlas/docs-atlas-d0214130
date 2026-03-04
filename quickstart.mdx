@@ -1,80 +1,436 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Build your first ICE connection with a complete working example
 ---
 
-## Get started in three steps
+This guide walks you through creating a complete ICE connection between two peers. We'll build a "ping-pong" application where two ICE agents establish a connection and exchange messages.
 
-Get your documentation site running locally and make your first customization.
+<Info>
+This example demonstrates local peer-to-peer communication. Both agents run on the same machine, but the same principles apply to remote connections.
+</Info>
 
-### Step 1: Set up your local environment
+## Overview
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+Establishing an ICE connection involves:
+
+1. Creating ICE agents on both sides
+2. Gathering local candidates (network addresses)
+3. Exchanging credentials and candidates with the remote peer
+4. Performing connectivity checks
+5. Using the established connection to send/receive data
+
+## Complete Example
+
+Here's a full working example that establishes an ICE connection between two peers:
+
+<Steps>
+  <Step title="Create the ICE agents">
+    Each peer creates an `Agent` with network configuration:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```go
+    agent, err := ice.NewAgentWithOptions(
+        ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer agent.Close()
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    <Tip>
+    `WithNetworkTypes` restricts which network protocols to use. Options include:
+    - `NetworkTypeUDP4` - IPv4 UDP (most common)
+    - `NetworkTypeUDP6` - IPv6 UDP
+    - `NetworkTypeTCP4` - IPv4 TCP
+    - `NetworkTypeTCP6` - IPv6 TCP
+    </Tip>
+  </Step>
+  
+  <Step title="Set up event handlers">
+    Register handlers for candidates and connection state changes:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```go
+    // Handle discovered candidates
+    agent.OnCandidate(func(candidate ice.Candidate) {
+        if candidate == nil {
+            return // Gathering complete
+        }
+        
+        // Send candidate to remote peer
+        candidateStr := candidate.Marshal()
+        sendToRemotePeer(candidateStr)
+    })
+    
+    // Monitor connection state
+    agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+        fmt.Printf("Connection state changed: %s\n", state.String())
+    })
+    ```
+    
+    <Note>
+    `OnCandidate` is called with `nil` when candidate gathering completes.
+    </Note>
+  </Step>
+  
+  <Step title="Exchange ICE credentials">
+    Get local credentials and share them with the remote peer:
+    
+    ```go
+    // Get local credentials
+    localUfrag, localPwd, err := agent.GetLocalUserCredentials()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Send to remote peer and receive theirs
+    sendCredentials(localUfrag, localPwd)
+    remoteUfrag, remotePwd := receiveRemoteCredentials()
+    ```
+    
+    The username fragment (ufrag) and password (pwd) are used to authenticate connectivity checks.
+  </Step>
+  
+  <Step title="Gather candidates">
+    Start gathering network candidates:
+    
+    ```go
+    err = agent.GatherCandidates()
+    if err != nil {
+        panic(err)
+    }
+    ```
+    
+    This discovers all available network paths (local addresses, STUN reflexive addresses, TURN relay addresses).
+  </Step>
+  
+  <Step title="Add remote candidates">
+    As you receive candidates from the remote peer, add them to your agent:
+    
+    ```go
+    // When you receive a candidate from remote peer
+    candidateStr := receiveFromRemotePeer()
+    candidate, err := ice.UnmarshalCandidate(candidateStr)
+    if err != nil {
+        panic(err)
+    }
+    
+    err = agent.AddRemoteCandidate(candidate)
+    if err != nil {
+        panic(err)
+    }
+    ```
+  </Step>
+  
+  <Step title="Establish the connection">
+    One peer acts as "controlling" and dials, the other "accepts":
+    
+    ```go
+    var conn *ice.Conn
+    
+    if isControlling {
+        // Controlling side initiates
+        conn, err = agent.Dial(context.TODO(), remoteUfrag, remotePwd)
+    } else {
+        // Controlled side waits
+        conn, err = agent.Accept(context.TODO(), remoteUfrag, remotePwd)
+    }
+    if err != nil {
+        panic(err)
+    }
+    defer conn.Close()
+    ```
+    
+    <Warning>
+    One peer must be controlling and the other controlled. Both cannot be the same role.
+    </Warning>
+  </Step>
+  
+  <Step title="Send and receive data">
+    Once connected, use the `ice.Conn` like any `net.Conn`:
+    
+    ```go
+    // Send data
+    message := []byte("Hello, ICE!")
+    n, err := conn.Write(message)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Receive data
+    buffer := make([]byte, 1500)
+    n, err = conn.Read(buffer)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Received: %s\n", string(buffer[:n]))
+    ```
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Full Working Example
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Here's a complete ping-pong example that demonstrates the entire flow. This example uses HTTP for signaling (exchanging credentials and candidates):
 
-### Step 3: Go live
+<CodeGroup>
+```go main.go
+package main
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+import (
+	"bufio"
+	"context"
+	"flag"
+	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"time"
 
-## Next steps
+	"github.com/pion/ice/v4"
+	"github.com/pion/randutil"
+)
 
-Now that you have your docs running, explore these key features:
+var (
+	isControlling                 bool
+	iceAgent                      *ice.Agent
+	remoteAuthChannel             chan string
+	localHTTPPort, remoteHTTPPort int
+)
+
+// HTTP handler to receive remote credentials
+func remoteAuth(_ http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		panic(err)
+	}
+	remoteAuthChannel <- r.PostForm["ufrag"][0]
+	remoteAuthChannel <- r.PostForm["pwd"][0]
+}
+
+// HTTP handler to receive remote candidates
+func remoteCandidate(_ http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		panic(err)
+	}
+
+	c, err := ice.UnmarshalCandidate(r.PostForm["candidate"][0])
+	if err != nil {
+		panic(err)
+	}
+
+	if err := iceAgent.AddRemoteCandidate(c); err != nil {
+		panic(err)
+	}
+}
+
+func main() {
+	remoteAuthChannel = make(chan string, 3)
+
+	flag.BoolVar(&isControlling, "controlling", false, "is ICE Agent controlling")
+	flag.Parse()
+
+	// Configure ports based on role
+	if isControlling {
+		localHTTPPort = 9000
+		remoteHTTPPort = 9001
+	} else {
+		localHTTPPort = 9001
+		remoteHTTPPort = 9000
+	}
+
+	// Start HTTP server for signaling
+	http.HandleFunc("/remoteAuth", remoteAuth)
+	http.HandleFunc("/remoteCandidate", remoteCandidate)
+	go func() {
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", localHTTPPort), nil); err != nil {
+			panic(err)
+		}
+	}()
+
+	fmt.Printf("Local Agent is %s\n", map[bool]string{true: "controlling", false: "controlled"}[isControlling])
+	fmt.Print("Press 'Enter' when both processes have started")
+	bufio.NewReader(os.Stdin).ReadBytes('\n')
+
+	// Create ICE agent
+	var err error
+	iceAgent, err = ice.NewAgentWithOptions(
+		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	// Handle candidates
+	iceAgent.OnCandidate(func(c ice.Candidate) {
+		if c == nil {
+			return
+		}
+		_, err := http.PostForm(
+			fmt.Sprintf("http://localhost:%d/remoteCandidate", remoteHTTPPort),
+			url.Values{"candidate": {c.Marshal()}},
+		)
+		if err != nil {
+			panic(err)
+		}
+	})
+
+	// Monitor connection state
+	iceAgent.OnConnectionStateChange(func(c ice.ConnectionState) {
+		fmt.Printf("ICE Connection State: %s\n", c.String())
+	})
+
+	// Exchange credentials
+	localUfrag, localPwd, err := iceAgent.GetLocalUserCredentials()
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = http.PostForm(
+		fmt.Sprintf("http://localhost:%d/remoteAuth", remoteHTTPPort),
+		url.Values{"ufrag": {localUfrag}, "pwd": {localPwd}},
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	remoteUfrag := <-remoteAuthChannel
+	remotePwd := <-remoteAuthChannel
+
+	// Gather candidates
+	if err = iceAgent.GatherCandidates(); err != nil {
+		panic(err)
+	}
+
+	// Establish connection
+	var conn *ice.Conn
+	if isControlling {
+		conn, err = iceAgent.Dial(context.TODO(), remoteUfrag, remotePwd)
+	} else {
+		conn, err = iceAgent.Accept(context.TODO(), remoteUfrag, remotePwd)
+	}
+	if err != nil {
+		panic(err)
+	}
+
+	// Send messages
+	go func() {
+		for {
+			time.Sleep(time.Second * 3)
+			val, _ := randutil.GenerateCryptoRandomString(15, "abcdefghijklmnopqrstuvwxyz")
+			if _, err := conn.Write([]byte(val)); err != nil {
+				panic(err)
+			}
+			fmt.Printf("Sent: '%s'\n", val)
+		}
+	}()
+
+	// Receive messages
+	buf := make([]byte, 1500)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Received: '%s'\n", string(buf[:n]))
+	}
+}
+```
+
+```bash Run the example
+# Terminal 1 - Controlling agent
+go run main.go -controlling
+
+# Terminal 2 - Controlled agent  
+go run main.go
+
+# Press Enter in both terminals when ready
+```
+</CodeGroup>
+
+<Tip>
+**Run the example**: Open two terminals and run the program with and without the `-controlling` flag. Press Enter in both when ready, and watch the connection establish!
+</Tip>
+
+## Key Concepts Explained
+
+### ICE Candidates
+
+Candidates represent possible network paths:
+
+- **Host candidates**: Your local IP addresses and ports
+- **Server reflexive candidates**: Your public IP (discovered via STUN)
+- **Relay candidates**: TURN server addresses (for difficult NAT scenarios)
+
+### Controlling vs Controlled
+
+ICE requires one peer to be "controlling" (initiates nomination) and the other "controlled" (responds). This is separate from client/server - either peer can be controlling.
+
+### Connection States
+
+Watch for these states during connection:
+
+```go
+ConnectionStateNew          // Initial state
+ConnectionStateChecking     // Testing candidate pairs
+ConnectionStateConnected    // Connection established
+ConnectionStateCompleted    // All checks done
+```
+
+## Adding STUN/TURN Servers
+
+For connections across the internet, add STUN/TURN servers:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+    ice.WithUrls([]*stun.URI{
+        stun.MustParseURI("stun:stun.l.google.com:19302"),
+    }),
+)
+```
+
+For relay (TURN) support:
+
+```go
+import "github.com/pion/stun/v3"
+
+turnURI := stun.MustParseURI("turn:turn.example.com:3478?transport=udp")
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{turnURI}),
+)
+```
+
+<Warning>
+TURN servers require authentication. Configure credentials in the URI or use `WithTURNCredentials` option.
+</Warning>
+
+## Continual Gathering
+
+For applications that need to adapt to network changes (like mobile apps), enable continual gathering:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithContinualGatheringPolicy(ice.GatherContinually),
+    ice.WithNetworkMonitorInterval(2 * time.Second),
+)
+```
+
+This monitors network interfaces and gathers new candidates when networks change.
+
+## Next Steps
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Agent Configuration" icon="gear" href="/guides/configuration">
+    Learn about all available agent options
+  </Card>
+  
+  <Card title="Candidate Types" icon="network-wired" href="/concepts/candidates">
+    Deep dive into ICE candidates
+  </Card>
+  
+  <Card title="NAT Traversal" icon="server" href="/guides/nat-traversal">
+    Configure STUN and TURN servers
+  </Card>
+  
+  <Card title="Examples" icon="code" href="/guides/examples">
+    Explore more code examples
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

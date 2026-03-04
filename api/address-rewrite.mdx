@@ -1,0 +1,329 @@
+---
+title: 'AddressRewriteRule'
+description: '1:1 NAT mapping and address rewriting for ICE candidates'
+---
+
+## Overview
+
+`AddressRewriteRule` allows you to rewrite local IP addresses with external public IPs for ICE candidates. This is essential for servers behind 1:1 NAT (like AWS EC2 instances) where the local interface has a private IP, but the server is reachable via a public IP.
+
+<Note>
+This replaces the deprecated `NAT1To1IPs` configuration field with a more flexible rule-based system.
+</Note>
+
+## Type Definition
+
+```go
+type AddressRewriteRule struct {
+    External        []string
+    Local           string
+    Iface           string
+    CIDR            string
+    AsCandidateType CandidateType
+    Mode            AddressRewriteMode
+    Networks        []NetworkType
+}
+```
+
+## Fields
+
+<ParamField path="External" type="[]string" required>
+  List of public IP addresses to advertise. For replace mode with an empty list, matched candidates are dropped. For append mode with an empty list, the original candidate is kept.
+</ParamField>
+
+<ParamField path="Local" type="string">
+  Specific local IP address to match. When set, external IPs map only to this address. When empty, acts as a catch-all for the IP family.
+</ParamField>
+
+<ParamField path="Iface" type="string">
+  Network interface name to limit the rule to (e.g., "eth0"). Empty matches all interfaces.
+</ParamField>
+
+<ParamField path="CIDR" type="string">
+  CIDR block to limit the rule to (e.g., "192.168.1.0/24"). Empty matches all addresses.
+</ParamField>
+
+<ParamField path="AsCandidateType" type="CandidateType" default="host">
+  The candidate type to publish. Supported values:
+  - `CandidateTypeHost` (default)
+  - `CandidateTypeServerReflexive`
+  - `CandidateTypeRelay`
+</ParamField>
+
+<ParamField path="Mode" type="AddressRewriteMode">
+  Controls whether to replace or append candidates. Default:
+  - `AddressRewriteReplace` for host candidates
+  - `AddressRewriteAppend` for srflx and relay candidates
+</ParamField>
+
+<ParamField path="Networks" type="[]NetworkType">
+  Limit the rule to specific network types. Empty or nil matches all networks.
+</ParamField>
+
+## AddressRewriteMode
+
+```go
+type AddressRewriteMode int
+
+const (
+    AddressRewriteReplace  // Replace original candidate
+    AddressRewriteAppend   // Keep original and add mapped candidates
+)
+```
+
+**Replace Mode:**
+- Removes the original candidate
+- Replaces it with the external IP(s)
+- Empty External list drops the candidate entirely
+
+**Append Mode:**
+- Keeps the original candidate
+- Adds additional candidates with external IP(s)
+- Empty External list keeps only the original
+
+## Rule Evaluation Order
+
+Rules are evaluated in order with specificity-based matching:
+
+1. **Explicit Local Match**: Rules with matching `Local` address win immediately
+2. **Catch-all Priority** (most specific first):
+   - Interface + CIDR
+   - Interface only
+   - CIDR only
+   - Global catch-all
+3. **Declaration Order**: Ties are broken by order of addition
+
+<Note>
+Overlapping rules at the same specificity level generate warnings.
+</Note>
+
+## Usage Examples
+
+<CodeGroup>
+```go Simple 1:1 NAT
+// Replace local IP with public IP
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Local:    "192.168.1.100",
+        },
+    ),
+)
+```
+
+```go AWS EC2 Style
+// Map all private IPs to public IP
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            // No Local = catch-all for IP family
+        },
+    ),
+)
+```
+
+```go Per-Interface Mapping
+// Different public IPs per interface
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Iface:    "eth0",
+        },
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.20"},
+            Iface:    "eth1",
+        },
+    ),
+)
+```
+
+```go CIDR-Based Mapping
+// Map specific subnet to public IP
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            CIDR:     "192.168.1.0/24",
+        },
+    ),
+)
+```
+
+```go Server Reflexive Type
+// Advertise as srflx instead of host
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External:        []string{"203.0.113.10"},
+            AsCandidateType: ice.CandidateTypeServerReflexive,
+        },
+    ),
+)
+```
+
+```go Append Mode
+// Keep original + add external candidates
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Mode:     ice.AddressRewriteAppend,
+        },
+    ),
+)
+```
+
+```go Network Type Filter
+// Only apply to UDP
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Networks: []ice.NetworkType{
+                ice.NetworkTypeUDP4,
+                ice.NetworkTypeUDP6,
+            },
+        },
+    ),
+)
+```
+
+```go Multiple External IPs
+// Dual-stack public IPs
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{
+                "203.0.113.10",      // IPv4
+                "2001:db8::1",       // IPv6
+            },
+        },
+    ),
+)
+```
+
+```go Deny-List Pattern
+// Drop specific candidates
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{}, // Empty = drop
+            Local:    "192.168.1.100",
+            Mode:     ice.AddressRewriteReplace,
+        },
+    ),
+)
+```
+</CodeGroup>
+
+## Advanced Patterns
+
+### Layered Specificity
+
+```go
+// Most specific rules first, fall back to catch-all
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        // Specific local address on eth0
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Local:    "192.168.1.100",
+            Iface:    "eth0",
+        },
+        // All other eth0 addresses
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.20"},
+            Iface:    "eth0",
+        },
+        // Global fallback
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.30"},
+        },
+    ),
+)
+```
+
+### Separate IPv4/IPv6
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        // IPv4 only
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Networks: []ice.NetworkType{
+                ice.NetworkTypeUDP4,
+                ice.NetworkTypeTCP4,
+            },
+        },
+        // IPv6 only
+        ice.AddressRewriteRule{
+            External: []string{"2001:db8::1"},
+            Networks: []ice.NetworkType{
+                ice.NetworkTypeUDP6,
+                ice.NetworkTypeTCP6,
+            },
+        },
+    ),
+)
+```
+
+## Validation
+
+Rules are validated during agent creation:
+
+- External IPs must be valid IP addresses (not CIDR)
+- Local address (if set) must be a valid IP
+- CIDR (if set) must be valid
+- Local address must be within CIDR (if both set)
+- Duplicate external IPs are removed
+- Empty external lists are allowed (for deny-list patterns)
+
+## Migration from NAT1To1IPs
+
+<CodeGroup>
+```go Before (Deprecated)
+config := &ice.AgentConfig{
+    NAT1To1IPs: []string{"203.0.113.10"},
+    NAT1To1IPCandidateType: ice.CandidateTypeServerReflexive,
+}
+agent, _ := ice.NewAgent(config)
+```
+
+```go After (Recommended)
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External:        []string{"203.0.113.10"},
+            AsCandidateType: ice.CandidateTypeServerReflexive,
+        },
+    ),
+)
+```
+</CodeGroup>
+
+## Conflict Warnings
+
+Overlapping rules generate warnings but don't fail:
+
+```
+WARN: detected overlapping address rewrite rule (candidate=host iface=* cidr=* networks=* local=*): 
+existing external IPs [203.0.113.10], additional external IP 203.0.113.20
+```
+
+This helps identify configuration issues without breaking functionality.
+
+## Compatibility
+
+- **mDNS**: Address rewrite rules with host candidates are incompatible with `MulticastDNSModeQueryAndGather`
+- **Candidate Types**: If a rule targets a candidate type that's disabled, a warning is logged
+- **ICE-Lite**: Host rewrite rules work with ICE-lite mode
+
+## Related
+
+- [Agent Options](/api/agent-options) - WithAddressRewriteRules function
+- [CandidateType](/api/candidate-type-enum) - Candidate type enum
+- [NetworkType](/api/network-types) - Network type enum

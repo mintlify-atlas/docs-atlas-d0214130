@@ -1,0 +1,265 @@
+---
+title: "Candidate Types"
+description: "Core ICE candidate interfaces, types, and base functionality in Pion ICE"
+---
+
+## Overview
+
+ICE candidates represent potential network paths for establishing peer-to-peer connections. The Pion ICE library provides a comprehensive type system for working with different candidate types defined in RFC 8445.
+
+## Candidate Interface
+
+The `Candidate` interface defines the core functionality shared by all candidate types.
+
+### Interface Definition
+
+```go candidate.go
+type Candidate interface {
+    Foundation() string
+    ID() string
+    Component() uint16
+    SetComponent(uint16)
+    LastReceived() time.Time
+    LastSent() time.Time
+    NetworkType() NetworkType
+    Address() string
+    Port() int
+    Priority() uint32
+    RelatedAddress() *CandidateRelatedAddress
+    Extensions() []CandidateExtension
+    GetExtension(key string) (value CandidateExtension, ok bool)
+    AddExtension(extension CandidateExtension) error
+    RemoveExtension(key string) (ok bool)
+    String() string
+    Type() CandidateType
+    TCPType() TCPType
+    Equal(other Candidate) bool
+    DeepEqual(other Candidate) bool
+    Marshal() string
+}
+```
+
+### Key Methods
+
+<ParamField path="Foundation()" type="string">
+  Returns an arbitrary string used in the freezing algorithm to group similar candidates. It is the same for two candidates that have the same type, base IP address, protocol (UDP, TCP, etc.), and STUN or TURN server.
+</ParamField>
+
+<ParamField path="ID()" type="string">
+  Returns a unique identifier for this candidate. Unlike the foundation, this is different for each candidate instance.
+</ParamField>
+
+<ParamField path="Component()" type="uint16">
+  Returns the component identifier. A component is a piece of a data stream. Common values are `ComponentRTP` (1) for RTP and `ComponentRTCP` (2) for RTCP.
+</ParamField>
+
+<ParamField path="LastReceived()" type="time.Time">
+  Returns the last time this candidate received traffic.
+</ParamField>
+
+<ParamField path="LastSent()" type="time.Time">
+  Returns the last time this candidate sent traffic.
+</ParamField>
+
+<ParamField path="NetworkType()" type="NetworkType">
+  Returns the network type (UDP4, UDP6, TCP4, or TCP6) for this candidate.
+</ParamField>
+
+<ParamField path="Address()" type="string">
+  Returns the IP address of the candidate.
+</ParamField>
+
+<ParamField path="Port()" type="int">
+  Returns the port number of the candidate.
+</ParamField>
+
+<ParamField path="Priority()" type="uint32">
+  Returns the priority value for this candidate. Priority is computed according to RFC 8445 Section 5.1.2.1.
+</ParamField>
+
+<ParamField path="RelatedAddress()" type="*CandidateRelatedAddress">
+  Returns a transport address related to the candidate, useful for diagnostics and other purposes. For reflexive and relay candidates, this is the base address.
+</ParamField>
+
+<ParamField path="Type()" type="CandidateType">
+  Returns the type of this candidate (host, srflx, prflx, or relay).
+</ParamField>
+
+<ParamField path="Marshal()" type="string">
+  Returns the string representation of the candidate in SDP format.
+</ParamField>
+
+## CandidateType Enum
+
+The `CandidateType` represents the different types of ICE candidates.
+
+```go candidatetype.go
+type CandidateType byte
+
+const (
+    CandidateTypeUnspecified CandidateType = iota
+    CandidateTypeHost
+    CandidateTypeServerReflexive
+    CandidateTypePeerReflexive
+    CandidateTypeRelay
+)
+```
+
+### Type Values
+
+<ResponseField name="CandidateTypeHost" type="CandidateType">
+  Represents a host candidate - a candidate obtained directly from a local interface.
+</ResponseField>
+
+<ResponseField name="CandidateTypeServerReflexive" type="CandidateType">
+  Represents a server reflexive candidate (srflx) - a candidate whose IP address and port are a binding allocated by a STUN server.
+</ResponseField>
+
+<ResponseField name="CandidateTypePeerReflexive" type="CandidateType">
+  Represents a peer reflexive candidate (prflx) - a candidate whose IP address and port are a binding allocated by a NAT, discovered through connectivity checks.
+</ResponseField>
+
+<ResponseField name="CandidateTypeRelay" type="CandidateType">
+  Represents a relay candidate - a candidate obtained from a TURN server.
+</ResponseField>
+
+### Methods
+
+<ParamField path="String()" type="string">
+  Returns the string representation: "host", "srflx", "prflx", or "relay".
+</ParamField>
+
+<ParamField path="Preference()" type="uint16">
+  Returns the type preference value used in priority calculation. Returns 126 for host, 110 for peer reflexive, 100 for server reflexive, and 0 for relay candidates.
+</ParamField>
+
+## CandidateBase
+
+The `candidateBase` struct provides common functionality for all candidate types. It is embedded in all concrete candidate implementations.
+
+### Priority Calculation
+
+Candidate priority is calculated according to RFC 8445:
+
+```
+priority = (2^24 * type-preference) + (2^8 * local-preference) + (2^0 * (256 - component))
+```
+
+### Foundation Calculation
+
+The foundation is computed as a CRC32 checksum of the candidate type, base address, and network type, unless explicitly overridden.
+
+## CandidateRelatedAddress
+
+Conveys transport addresses related to the candidate, useful for diagnostics.
+
+```go candidaterelatedaddress.go
+type CandidateRelatedAddress struct {
+    Address string
+    Port    int
+}
+```
+
+<ParamField path="Address" type="string">
+  The related IP address.
+</ParamField>
+
+<ParamField path="Port" type="int">
+  The related port number.
+</ParamField>
+
+## CandidateExtension
+
+Represents a single candidate extension as defined in RFC 5245 Section 15.1.
+
+```go candidate_base.go
+type CandidateExtension struct {
+    Key   string
+    Value string
+}
+```
+
+<ParamField path="Key" type="string">
+  The extension attribute name.
+</ParamField>
+
+<ParamField path="Value" type="string">
+  The extension attribute value.
+</ParamField>
+
+## NetworkType
+
+Represents the network protocol and IP version for a candidate.
+
+```go networktype.go
+type NetworkType int
+
+const (
+    NetworkTypeUDP4 NetworkType = iota + 1
+    NetworkTypeUDP6
+    NetworkTypeTCP4
+    NetworkTypeTCP6
+)
+```
+
+### Methods
+
+<ParamField path="IsUDP()" type="bool">
+  Returns true when network is UDP4 or UDP6.
+</ParamField>
+
+<ParamField path="IsTCP()" type="bool">
+  Returns true when network is TCP4 or TCP6.
+</ParamField>
+
+<ParamField path="IsIPv4()" type="bool">
+  Returns true when network is IPv4 (UDP4 or TCP4).
+</ParamField>
+
+<ParamField path="IsIPv6()" type="bool">
+  Returns true when network is IPv6 (UDP6 or TCP6).
+</ParamField>
+
+## Component Constants
+
+```go candidate.go
+const (
+    ComponentRTP  uint16 = 1
+    ComponentRTCP uint16 = 2
+)
+```
+
+<ResponseField name="ComponentRTP" type="uint16">
+  Indicates that the candidate is used for RTP (value: 1).
+</ResponseField>
+
+<ResponseField name="ComponentRTCP" type="uint16">
+  Indicates that the candidate is used for RTCP (value: 2).
+</ResponseField>
+
+## Unmarshaling Candidates
+
+Parse a candidate from its string representation:
+
+```go
+func UnmarshalCandidate(raw string) (Candidate, error)
+```
+
+### Example
+
+```go
+candidate, err := ice.UnmarshalCandidate(
+    "candidate:842163049 1 udp 1677729535 192.168.1.100 50000 typ srflx raddr 10.0.0.5 rport 50000",
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Type:", candidate.Type())
+fmt.Println("Address:", candidate.Address())
+fmt.Println("Port:", candidate.Port())
+```
+
+<Note>
+The `UnmarshalCandidate` function accepts candidates with or without the "candidate:" prefix as defined in RFC 5245 Section 15.1.
+</Note>

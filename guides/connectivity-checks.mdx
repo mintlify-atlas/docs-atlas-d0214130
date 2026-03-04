@@ -1,0 +1,412 @@
+---
+title: Connectivity Checks
+description: Understanding ICE connectivity checks and candidate pair nomination
+---
+
+ICE connectivity checks verify which candidate pairs can successfully communicate. This guide covers how connectivity checks work, the nomination process, and how to configure check behavior.
+
+## Overview
+
+After gathering candidates, the ICE agent performs connectivity checks to find working candidate pairs:
+
+<Steps>
+  <Step title="Pairing">
+    Local and remote candidates are paired together based on component and foundation
+  </Step>
+  <Step title="Prioritization">
+    Pairs are sorted by priority (controlling agent uses local + remote priority)
+  </Step>
+  <Step title="Connectivity Checks">
+    STUN binding requests are sent to test each pair
+  </Step>
+  <Step title="Nomination">
+    The controlling agent nominates a successful pair for use
+  </Step>
+</Steps>
+
+## Check Interval
+
+The check interval controls how frequently the agent performs connectivity checks:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithCheckInterval(200 * time.Millisecond), // default
+)
+```
+
+<Info>
+The default check interval is 200ms as defined in `agent_config.go:18`.
+</Info>
+
+## Controlling vs Controlled
+
+ICE agents operate in two roles:
+
+### Controlling Agent
+
+The controlling agent:
+- Nominates candidate pairs using the USE-CANDIDATE attribute
+- Waits for minimum acceptance times before nomination
+- Includes the ICE-CONTROLLING attribute in binding requests
+
+```go
+conn, err := agent.Dial(ctx, remoteUfrag, remotePwd)
+```
+
+### Controlled Agent
+
+The controlled agent:
+- Accepts nominations from the controlling agent
+- Responds to binding requests with binding responses
+- Includes the ICE-CONTROLLED attribute in binding requests
+
+```go
+conn, err := agent.Accept(ctx, remoteUfrag, remotePwd)
+```
+
+## Candidate Pair States
+
+Candidate pairs transition through several states:
+
+1. **Waiting** - Pair created, waiting to be checked
+2. **In Progress** - Check in progress
+3. **Succeeded** - Check succeeded, pair is valid
+4. **Failed** - Check failed after max binding requests
+
+## Nomination Process
+
+The controlling agent nominates pairs based on candidate type acceptance wait times:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithHostAcceptanceMinWait(0 * time.Millisecond),      // default: 0ms
+    ice.WithSrflxAcceptanceMinWait(500 * time.Millisecond),   // default: 500ms
+    ice.WithPrflxAcceptanceMinWait(1000 * time.Millisecond),  // default: 1s
+    ice.WithRelayAcceptanceMinWait(2000 * time.Millisecond),  // default: 2s
+)
+```
+
+### Nomination Logic
+
+From `selection.go:34`:
+
+```go
+func (s *controllingSelector) isNominatable(c Candidate) bool {
+    switch {
+    case c.Type() == CandidateTypeHost:
+        return time.Since(s.startTime) > s.agent.hostAcceptanceMinWait
+    case c.Type() == CandidateTypeServerReflexive:
+        return time.Since(s.startTime) > s.agent.srflxAcceptanceMinWait
+    case c.Type() == CandidateTypePeerReflexive:
+        return time.Since(s.startTime) > s.agent.prflxAcceptanceMinWait
+    case c.Type() == CandidateTypeRelay:
+        return time.Since(s.startTime) > s.agent.relayAcceptanceMinWait
+    }
+    return false
+}
+```
+
+This allows you to configure how quickly each candidate type can be nominated.
+
+<Tip>
+Increase relay acceptance wait time to give direct connections more time to establish before falling back to TURN.
+</Tip>
+
+## Binding Requests
+
+Connectivity checks use STUN binding requests:
+
+### Controlling Agent Request
+
+```go
+// From selection.go:193
+msg, err := stun.Build(stun.BindingRequest, stun.TransactionID,
+    stun.NewUsername(s.agent.remoteUfrag+":"+s.agent.localUfrag),
+    AttrControlling(s.agent.tieBreaker),
+    PriorityAttr(local.Priority()),
+    stun.NewShortTermIntegrity(s.agent.remotePwd),
+    stun.Fingerprint,
+)
+```
+
+### Nomination Request
+
+```go
+// From selection.go:87
+msg, err := stun.Build(stun.BindingRequest, stun.TransactionID,
+    stun.NewUsername(s.agent.remoteUfrag+":"+s.agent.localUfrag),
+    UseCandidate(),  // USE-CANDIDATE attribute
+    AttrControlling(s.agent.tieBreaker),
+    PriorityAttr(pair.Local.Priority()),
+    stun.NewShortTermIntegrity(s.agent.remotePwd),
+    stun.Fingerprint,
+)
+```
+
+## Maximum Binding Requests
+
+Control how many binding requests are sent before considering a pair failed:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithMaxBindingRequests(7), // default
+)
+```
+
+<Info>
+The default is 7 attempts as defined in `agent_config.go:48`.
+</Info>
+
+## Keepalive
+
+Once a pair is selected, keepalive packets maintain the NAT binding:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithKeepaliveInterval(2 * time.Second), // default
+)
+```
+
+Set to `0` to disable keepalives:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithKeepaliveInterval(0),
+)
+```
+
+## Renomination
+
+Pion ICE supports renomination as described in draft-thatcher-ice-renomination:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+)
+```
+
+### How Renomination Works
+
+1. Controlling agent can renominate multiple times
+2. Each nomination includes an incrementing nomination value
+3. Controlled agent follows "last nomination wins" rule
+4. Allows switching to better paths after initial connection
+
+### Automatic Renomination
+
+Automatically switch to better candidate pairs:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+    ice.WithAutomaticRenomination(3 * time.Second),
+)
+```
+
+The agent will:
+- Wait at least 3 seconds after connection
+- Continuously evaluate candidate pairs
+- Automatically renominate when a significantly better pair is found (e.g., switching from relay to direct connection)
+
+<Note>
+Automatic renomination requires renomination to be enabled and both agents to support it.
+</Note>
+
+## Custom Nomination Logic
+
+Implement custom candidate pair switching with a binding request handler:
+
+```go
+handler := func(m *stun.Message, local, remote ice.Candidate, pair *ice.CandidatePair) bool {
+    // Custom logic to decide if we should switch to this pair
+    if shouldSwitch(pair) {
+        log.Printf("Switching to pair: %s <-> %s", local, remote)
+        return true // Switch to this pair
+    }
+    return false // Keep current pair
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithBindingRequestHandler(handler),
+)
+```
+
+## Candidate Pair Priority
+
+Pair priority is calculated based on the controlling role:
+
+```go
+// Controlling agent
+pairPriority = 2^32 * min(localPriority, remotePriority) + 
+               2 * max(localPriority, remotePriority) + 
+               (localPriority > remotePriority ? 1 : 0)
+```
+
+Higher priority pairs are checked first.
+
+## Connection State Transitions
+
+The ICE connection state transitions through:
+
+1. **New** - Agent created
+2. **Checking** - Performing connectivity checks
+3. **Connected** - At least one working pair found
+4. **Completed** - All checks completed (optional)
+5. **Failed** - All checks failed
+6. **Disconnected** - Connection lost
+7. **Closed** - Agent closed
+
+```go
+err = agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+    switch state {
+    case ice.ConnectionStateConnected:
+        fmt.Println("ICE connected!")
+    case ice.ConnectionStateFailed:
+        fmt.Println("ICE failed")
+    }
+})
+```
+
+## Selected Candidate Pair
+
+Monitor when the selected candidate pair changes:
+
+```go
+err = agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
+    fmt.Printf("Selected pair: %s <-> %s\n", local, remote)
+    fmt.Printf("  Local type: %s\n", local.Type())
+    fmt.Printf("  Remote type: %s\n", remote.Type())
+})
+```
+
+## Candidate Pair Statistics
+
+Retrieve statistics about candidate pairs:
+
+```go
+stats := agent.GetCandidatePairsStats()
+for _, stat := range stats {
+    fmt.Printf("Pair: %s <-> %s\n", stat.LocalCandidateID, stat.RemoteCandidateID)
+    fmt.Printf("  State: %s\n", stat.State)
+    fmt.Printf("  Nominated: %v\n", stat.Nominated)
+    if stat.CurrentRoundTripTime > 0 {
+        fmt.Printf("  RTT: %.2fms\n", stat.CurrentRoundTripTime*1000)
+    }
+}
+```
+
+## Lite Agent Behavior
+
+ICE Lite agents have simplified check behavior:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithICELite(true),
+)
+```
+
+- Do not perform connectivity checks
+- Only provide host candidates
+- Respond to incoming binding requests
+- Accept nominations from full ICE agent
+
+<Warning>
+Both agents cannot be ICE Lite. At least one must be a full ICE agent.
+</Warning>
+
+## Example: Monitoring Connectivity
+
+Here's a complete example monitoring the connectivity check process:
+
+```go
+import (
+    "context"
+    "fmt"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func monitorConnectivity(agent *ice.Agent) {
+    // Monitor connection state
+    agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+        fmt.Printf("[%s] Connection state: %s\n", 
+            time.Now().Format("15:04:05"), state)
+    })
+    
+    // Monitor selected pair changes
+    agent.OnSelectedCandidatePairChange(func(local, remote ice.Candidate) {
+        fmt.Printf("[%s] Selected pair changed\n", time.Now().Format("15:04:05"))
+        fmt.Printf("  Local:  %s (type: %s)\n", local, local.Type())
+        fmt.Printf("  Remote: %s (type: %s)\n", remote, remote.Type())
+        
+        // Get RTT for selected pair
+        stats := agent.GetCandidatePairsStats()
+        for _, stat := range stats {
+            if stat.LocalCandidateID == local.ID() && 
+               stat.RemoteCandidateID == remote.ID() {
+                if stat.CurrentRoundTripTime > 0 {
+                    fmt.Printf("  RTT: %.2fms\n", 
+                        stat.CurrentRoundTripTime*1000)
+                }
+            }
+        }
+    })
+    
+    // Periodically print statistics
+    go func() {
+        ticker := time.NewTicker(5 * time.Second)
+        defer ticker.Stop()
+        
+        for range ticker.C {
+            stats := agent.GetCandidatePairsStats()
+            fmt.Printf("\n=== Candidate Pair Statistics ===\n")
+            for _, stat := range stats {
+                fmt.Printf("%s <-> %s: %s (nominated: %v)\n",
+                    stat.LocalCandidateID,
+                    stat.RemoteCandidateID,
+                    stat.State,
+                    stat.Nominated)
+            }
+            fmt.Println()
+        }
+    }()
+}
+```
+
+## Troubleshooting
+
+### Checks Never Succeed
+
+- Verify remote credentials are correct
+- Check firewall rules allow UDP/TCP traffic
+- Enable debug logging to see detailed check progress
+- Try increasing max binding requests
+
+### Connection Takes Too Long
+
+- Reduce candidate type acceptance wait times
+- Disable unnecessary candidate types
+- Use ICE Lite if appropriate for your deployment
+
+### Frequent Disconnections
+
+- Increase keepalive interval if bandwidth is limited
+- Check for network stability issues
+- Review disconnected/failed timeout settings
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Gathering" icon="magnifying-glass" href="./gathering">
+    Learn about candidate gathering
+  </Card>
+  <Card title="NAT Traversal" icon="route" href="./nat-traversal">
+    Configure NAT traversal strategies
+  </Card>
+  <Card title="Multiplexing" icon="network-wired" href="./multiplexing">
+    Share ports with UDPMux and TCPMux
+  </Card>
+  <Card title="Examples" icon="code" href="./examples">
+    See connectivity checks in action
+  </Card>
+</CardGroup>

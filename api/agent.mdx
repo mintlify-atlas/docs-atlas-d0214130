@@ -1,0 +1,257 @@
+---
+title: 'Agent'
+description: 'ICE Agent implementation for establishing peer-to-peer connections'
+---
+
+## Overview
+
+The `Agent` represents the ICE agent responsible for gathering candidates, performing connectivity checks, and establishing peer-to-peer connections according to RFC 5245.
+
+## Creating an Agent
+
+### NewAgent (Deprecated)
+
+```go
+func NewAgent(config *AgentConfig) (*Agent, error)
+```
+
+Creates a new Agent using the legacy configuration struct.
+
+<Warning>
+Deprecated: Use `NewAgentWithOptions` instead for better flexibility and forward compatibility.
+</Warning>
+
+**Parameters:**
+
+<ParamField path="config" type="*AgentConfig">
+  Configuration for the agent. See [AgentConfig](/api/agent-config) for details.
+</ParamField>
+
+**Returns:** `(*Agent, error)`
+
+### NewAgentWithOptions
+
+```go
+func NewAgentWithOptions(opts ...AgentOption) (*Agent, error)
+```
+
+Creates a new Agent using functional options. This is the recommended way to create agents.
+
+**Parameters:**
+
+<ParamField path="opts" type="...AgentOption">
+  Variable number of configuration options. See [Agent Options](/api/agent-options) for available options.
+</ParamField>
+
+**Returns:** `(*Agent, error)`
+
+**Example:**
+
+<CodeGroup>
+```go Basic Usage
+import (
+    "github.com/pion/ice/v4"
+    "github.com/pion/stun/v3"
+)
+
+// Create agent with STUN server
+stunURL, _ := stun.ParseURI("stun:stun.l.google.com:19302")
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+)
+if err != nil {
+    panic(err)
+}
+defer agent.Close()
+```
+
+```go Advanced Configuration
+// Create agent with multiple options
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+    ice.WithPortRange(10000, 20000),
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+    }),
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+    }),
+)
+```
+</CodeGroup>
+
+## Key Methods
+
+### GatherCandidates
+
+```go
+func (a *Agent) GatherCandidates() error
+```
+
+Starts the candidate gathering process. This discovers available local addresses and queries STUN/TURN servers.
+
+### GetLocalCandidates
+
+```go
+func (a *Agent) GetLocalCandidates() ([]Candidate, error)
+```
+
+Returns all gathered local candidates.
+
+### AddRemoteCandidate
+
+```go
+func (a *Agent) AddRemoteCandidate(cand Candidate) error
+```
+
+Adds a remote candidate received from the peer. This triggers connectivity checks for candidate pairs.
+
+**Parameters:**
+
+<ParamField path="cand" type="Candidate">
+  Remote candidate to add. Can be nil (ignored).
+</ParamField>
+
+### GetSelectedCandidatePair
+
+```go
+func (a *Agent) GetSelectedCandidatePair() (*CandidatePair, error)
+```
+
+Returns the currently selected candidate pair, or nil if no pair is selected.
+
+### SetRemoteCredentials
+
+```go
+func (a *Agent) SetRemoteCredentials(remoteUfrag, remotePwd string) error
+```
+
+Sets the remote agent's ICE credentials.
+
+**Parameters:**
+
+<ParamField path="remoteUfrag" type="string" required>
+  Remote username fragment (must not be empty)
+</ParamField>
+
+<ParamField path="remotePwd" type="string" required>
+  Remote password (must not be empty)
+</ParamField>
+
+### GetLocalUserCredentials
+
+```go
+func (a *Agent) GetLocalUserCredentials() (frag string, pwd string, err error)
+```
+
+Returns the local ICE credentials (username fragment and password).
+
+### Restart
+
+```go
+func (a *Agent) Restart(ufrag, pwd string) error
+```
+
+Restarts the ICE agent with new credentials. If empty strings are provided, the agent generates new credentials.
+
+**Parameters:**
+
+<ParamField path="ufrag" type="string">
+  New username fragment. Empty string generates a random value.
+</ParamField>
+
+<ParamField path="pwd" type="string">
+  New password. Empty string generates a random value.
+</ParamField>
+
+<Note>
+Credentials must meet minimum entropy requirements: ufrag >= 24 bits, pwd >= 128 bits.
+</Note>
+
+### UpdateOptions
+
+```go
+func (a *Agent) UpdateOptions(opts ...AgentOption) error
+```
+
+Applies options to the agent at runtime. Only a subset of options can be updated after creation (e.g., `WithUrls`).
+
+### Close
+
+```go
+func (a *Agent) Close() error
+```
+
+Cleans up the agent and releases resources. Does not wait for goroutines to complete.
+
+### GracefulClose
+
+```go
+func (a *Agent) GracefulClose() error
+```
+
+Cleans up the agent and waits for all goroutines to complete. Should only be called outside of agent callbacks or in a separate goroutine.
+
+## State Management
+
+### GetGatheringState
+
+```go
+func (a *Agent) GetGatheringState() (GatheringState, error)
+```
+
+Returns the current gathering state. See [GatheringState](/api/gathering-state).
+
+### OnConnectionStateChange
+
+```go
+func (a *Agent) OnConnectionStateChange(f func(ConnectionState))
+```
+
+Registers a handler that is called when the connection state changes.
+
+### OnSelectedCandidatePairChange
+
+```go
+func (a *Agent) OnSelectedCandidatePairChange(f func(Candidate, Candidate))
+```
+
+Registers a handler called when the selected candidate pair changes.
+
+### OnCandidate
+
+```go
+func (a *Agent) OnCandidate(f func(Candidate))
+```
+
+Registers a handler called when a new local candidate is gathered. Called with nil when gathering is complete.
+
+## Renomination
+
+### RenominateCandidate
+
+```go
+func (a *Agent) RenominateCandidate(local, remote Candidate) error
+```
+
+Allows the controlling agent to nominate a new candidate pair. Requires renomination to be enabled.
+
+**Returns:** Error if agent is not controlling, renomination is disabled, or candidate pair not found.
+
+## Type Definition
+
+```go
+type Agent struct {
+    // Internal fields (not directly accessible)
+}
+```
+
+## Related Types
+
+- [AgentConfig](/api/agent-config) - Legacy configuration struct
+- [AgentOption](/api/agent-options) - Functional options for agent creation
+- [ConnectionState](/api/connection-state) - Connection state enum
+- [GatheringState](/api/gathering-state) - Gathering state enum
+- [Candidate](/api/candidate-types) - Candidate interface

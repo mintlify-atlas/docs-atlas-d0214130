@@ -1,0 +1,203 @@
+---
+title: Installation
+description: Install and set up Pion ICE in your Go project
+---
+
+## Requirements
+
+Pion ICE requires **Go 1.24.0** or later. Verify your Go version:
+
+```bash
+go version
+```
+
+If you need to upgrade Go, visit [golang.org/dl](https://golang.org/dl/).
+
+## Install Pion ICE
+
+Add Pion ICE to your Go module:
+
+```bash
+go get github.com/pion/ice/v4
+```
+
+This will download the latest v4 release and add it to your `go.mod` file.
+
+<Info>
+**Version 4** is the current major version. If you're upgrading from v3 or earlier, see the migration guide for breaking changes.
+</Info>
+
+## Project Setup
+
+<Steps>
+  <Step title="Create a new Go module">
+    If you don't already have a Go module, initialize one:
+    
+    ```bash
+    mkdir my-ice-app
+    cd my-ice-app
+    go mod init example.com/my-ice-app
+    ```
+  </Step>
+  
+  <Step title="Install Pion ICE">
+    Add the ICE package to your project:
+    
+    ```bash
+    go get github.com/pion/ice/v4
+    ```
+  </Step>
+  
+  <Step title="Create your first file">
+    Create a `main.go` file with a basic import:
+    
+    ```go main.go
+    package main
+    
+    import (
+        "fmt"
+        "github.com/pion/ice/v4"
+    )
+    
+    func main() {
+        agent, err := ice.NewAgentWithOptions(
+            ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+        )
+        if err != nil {
+            panic(err)
+        }
+        defer agent.Close()
+        
+        fmt.Println("ICE Agent created successfully!")
+    }
+    ```
+  </Step>
+  
+  <Step title="Verify installation">
+    Run your program to verify everything works:
+    
+    ```bash
+    go run main.go
+    ```
+    
+    You should see:
+    ```
+    ICE Agent created successfully!
+    ```
+  </Step>
+</Steps>
+
+## Dependencies
+
+Pion ICE automatically installs these key dependencies:
+
+- **github.com/pion/stun/v3** - STUN protocol implementation
+- **github.com/pion/turn/v4** - TURN protocol for relay connections
+- **github.com/pion/dtls/v3** - DTLS support for secure TURN
+- **github.com/pion/mdns/v2** - Multicast DNS for local discovery
+- **github.com/pion/transport/v4** - Network transport abstractions
+- **github.com/pion/logging** - Structured logging interface
+
+These are managed automatically by Go modules.
+
+## Optional: TURN Server Setup
+
+For production applications, you'll typically need a TURN server for relay connections. While not required for development, consider:
+
+<Tip>
+**Free TURN Servers**: For testing, you can use public TURN servers like:
+- `stun:stun.l.google.com:19302` (STUN only)
+- OpenRelay TURN servers (with rate limits)
+
+**Production**: Run your own TURN server using [coturn](https://github.com/coturn/coturn) or [Pion TURN](https://github.com/pion/turn).
+</Tip>
+
+## Verify Your Environment
+
+Create a quick test to verify your setup:
+
+```go verify.go
+package main
+
+import (
+	"fmt"
+	"github.com/pion/ice/v4"
+)
+
+func main() {
+	// Create an agent
+	agent, err := ice.NewAgentWithOptions(
+		ice.WithNetworkTypes([]ice.NetworkType{
+			ice.NetworkTypeUDP4,
+			ice.NetworkTypeUDP6,
+		}),
+		ice.WithCandidateTypes([]ice.CandidateType{
+			ice.CandidateTypeHost,
+		}),
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer agent.Close()
+
+	// Get local credentials
+	ufrag, pwd, err := agent.GetLocalUserCredentials()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("✓ ICE Agent created\n")
+	fmt.Printf("✓ Local credentials: %s:%s\n", ufrag[:8], pwd[:8])
+	fmt.Println("✓ Environment verified!")
+}
+```
+
+Run it:
+
+```bash
+go run verify.go
+```
+
+<Warning>
+If you encounter import errors, ensure you're using the correct import path:
+- ✅ `github.com/pion/ice/v4`
+- ❌ `github.com/pion/ice` (this is v1/v2)
+</Warning>
+
+## Troubleshooting
+
+### Module errors
+
+If you see module resolution errors:
+
+```bash
+# Clear module cache
+go clean -modcache
+
+# Re-download dependencies
+go mod download
+```
+
+### Go version mismatch
+
+If your Go version is too old, you'll see:
+
+```
+go.mod requires go >= 1.24.0
+```
+
+Upgrade Go from [golang.org/dl](https://golang.org/dl/).
+
+### Import errors
+
+Make sure you're importing the v4 version:
+
+```go
+import "github.com/pion/ice/v4"
+```
+
+## Next Steps
+
+<Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+  Build a complete ICE connection with our step-by-step quickstart
+</Card>

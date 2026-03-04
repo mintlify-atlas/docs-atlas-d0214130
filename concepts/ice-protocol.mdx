@@ -1,0 +1,270 @@
+---
+title: ICE Protocol
+description: Understanding the Interactive Connectivity Establishment protocol and Pion ICE's implementation
+---
+
+The Interactive Connectivity Establishment (ICE) protocol is a framework for establishing peer-to-peer connections across complex network topologies, including those with NAT (Network Address Translation) and firewalls.
+
+## What is ICE?
+
+ICE is a technique used to find the best way to connect two peers in WebRTC and other real-time communication systems. The protocol works by gathering potential connection paths (candidates) from both peers, testing them, and selecting the optimal path for media transmission.
+
+<Info>
+  ICE solves the complex problem of NAT traversal by systematically testing multiple connection paths between peers to find one that works.
+</Info>
+
+## Why ICE is Needed
+
+Modern networks present several challenges for direct peer-to-peer connections:
+
+- **NAT devices** hide internal IP addresses and translate ports
+- **Firewalls** block unsolicited inbound connections
+- **Multiple network interfaces** (WiFi, Ethernet, VPN) create routing complexity
+- **Enterprise networks** may restrict certain protocols or ports
+
+ICE addresses these challenges through a systematic approach to candidate gathering and connectivity testing.
+
+## RFC 5245 Compliance
+
+Pion ICE implements the Interactive Connectivity Establishment protocol as defined in [RFC 5245](https://datatracker.ietf.org/doc/html/rfc5245). The implementation provides:
+
+- Full ICE agent functionality
+- Support for both controlling and controlled roles
+- Candidate gathering and prioritization
+- Connectivity checks with STUN binding requests
+- Nomination and pair selection
+
+## Key ICE Concepts
+
+### Candidates
+
+Candidates represent potential connection endpoints. ICE defines four types:
+
+<CardGroup cols={2}>
+  <Card title="Host" icon="house">
+    Direct IP addresses from local network interfaces
+  </Card>
+  <Card title="Server Reflexive" icon="network-wired">
+    Public IP addresses discovered via STUN servers
+  </Card>
+  <Card title="Peer Reflexive" icon="arrows-left-right">
+    Addresses learned during connectivity checks
+  </Card>
+  <Card title="Relay" icon="router">
+    Addresses allocated on TURN relay servers
+  </Card>
+</CardGroup>
+
+See the [Candidates](/concepts/candidates) page for detailed information about each type.
+
+### Connectivity Checks
+
+Connectivity checks test whether candidate pairs can successfully exchange data:
+
+1. The ICE agent forms candidate pairs from local and remote candidates
+2. Pairs are prioritized based on candidate types and preferences
+3. STUN binding requests are sent to test each pair
+4. Successful responses validate the connection path
+5. The best working pair is selected for media transmission
+
+### Nomination
+
+Nomination is the process of selecting a candidate pair for use:
+
+- **Controlling agent**: Initiates nomination by sending binding requests with USE-CANDIDATE flag
+- **Controlled agent**: Responds to nomination requests
+- Once nominated and acknowledged, the pair becomes the selected pair
+
+## How Pion ICE Implements the Protocol
+
+### Agent Architecture
+
+Pion ICE centers around the `Agent` type defined in `agent.go:40`:
+
+```go
+type Agent struct {
+    tieBreaker           uint64
+    lite                 bool
+    connectionState      ConnectionState
+    gatheringState       GatheringState
+    isControlling        atomic.Bool
+    localCandidates      map[NetworkType][]Candidate
+    remoteCandidates     map[NetworkType][]Candidate
+    checklist            []*CandidatePair
+    selectedPair         atomic.Value
+    // ... additional fields
+}
+```
+
+The agent manages:
+- Local and remote candidate lists
+- Candidate pair checklist for connectivity testing
+- Connection state machine
+- Gathering state machine
+- Role (controlling vs controlled)
+
+### State Machines
+
+Pion ICE implements two parallel state machines:
+
+#### Connection State
+
+Defined in `ice.go:10-34`:
+
+- `ConnectionStateNew` - Initial state, gathering addresses
+- `ConnectionStateChecking` - Performing connectivity checks
+- `ConnectionStateConnected` - Successfully connected with a working pair
+- `ConnectionStateCompleted` - All checks finished
+- `ConnectionStateFailed` - Unable to establish connection
+- `ConnectionStateDisconnected` - Previously connected, now having issues
+- `ConnectionStateClosed` - Agent has been closed
+
+#### Gathering State
+
+Defined in `ice.go:58-72`:
+
+- `GatheringStateNew` - Gathering not yet started
+- `GatheringStateGathering` - Actively gathering candidates
+- `GatheringStateComplete` - All candidates gathered
+
+### Candidate Gathering Process
+
+The gathering process implemented in `gather.go:50-113`:
+
+1. **Initiate gathering** with `GatherCandidates()`
+2. **Collect host candidates** from local network interfaces
+3. **Discover server reflexive candidates** using STUN servers
+4. **Allocate relay candidates** from TURN servers
+5. **Emit candidates** through the candidate callback handler
+6. **Complete gathering** when all sources exhausted
+
+<Tip>
+  Pion ICE supports continual gathering, which monitors network changes and gathers new candidates dynamically. This is useful for mobile devices that may switch between WiFi and cellular networks.
+</Tip>
+
+### Connectivity Check Implementation
+
+Connectivity checks are handled in `agent.go:654-729`:
+
+```go
+func (a *Agent) connectivityChecks() {
+    // Periodic task that:
+    // - Sends STUN binding requests to candidate pairs
+    // - Monitors for timeouts and failures
+    // - Transitions connection state based on results
+    // - Implements keepalive for selected pairs
+}
+```
+
+The process:
+1. Forms candidate pairs from local and remote candidates
+2. Prioritizes pairs based on candidate preferences
+3. Sends binding requests to test connectivity
+4. Tracks responses and round-trip times
+5. Updates pair state based on results
+
+### Priority Calculation
+
+Candidate priorities follow RFC 5245 recommendations (defined in `candidatetype.go:44-57`):
+
+- **Host**: 126 (highest priority for direct connections)
+- **Peer Reflexive**: 110
+- **Server Reflexive**: 100
+- **Relay**: 0 (lowest priority, used as fallback)
+
+Pair priority is calculated using the formula from RFC 5245 in `candidatepair.go:92-129`:
+
+```
+pair priority = 2^32*MIN(G,D) + 2*MAX(G,D) + (G>D?1:0)
+```
+
+Where G is the controlling agent's candidate priority and D is the controlled agent's priority.
+
+## Usage Example
+
+```go
+import "github.com/pion/ice/v4"
+
+// Create an agent
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+    }),
+)
+if err != nil {
+    panic(err)
+}
+
+// Set up callbacks
+agent.OnCandidate(func(c ice.Candidate) {
+    if c == nil {
+        // Gathering complete
+        return
+    }
+    // Send candidate to remote peer
+})
+
+agent.OnConnectionStateChange(func(state ice.ConnectionState) {
+    fmt.Printf("Connection state changed: %s\n", state)
+})
+
+// Get local credentials
+ufrag, pwd, _ := agent.GetLocalUserCredentials()
+
+// Start gathering candidates
+if err := agent.GatherCandidates(); err != nil {
+    panic(err)
+}
+
+// Set remote credentials from other peer
+if err := agent.SetRemoteCredentials(remoteUfrag, remotePwd); err != nil {
+    panic(err)
+}
+
+// Add remote candidates from other peer
+for _, remoteCandidate := range remoteCandidates {
+    if err := agent.AddRemoteCandidate(remoteCandidate); err != nil {
+        panic(err)
+    }
+}
+
+// Dial (as controlling agent)
+conn, err := agent.Dial(context.Background(), remoteUfrag, remotePwd)
+if err != nil {
+    panic(err)
+}
+
+// Or accept (as controlled agent)
+// conn, err := agent.Accept(context.Background(), remoteUfrag, remotePwd)
+```
+
+## Best Practices
+
+<Note>
+  **Performance considerations:**
+  - Use `WithMaxBindingRequests()` to limit retry attempts
+  - Configure appropriate timeout values for your network conditions
+  - Consider using lite mode for servers with public IP addresses
+</Note>
+
+<Accordion title="When to use ICE Lite mode">
+  ICE Lite is appropriate for servers with publicly accessible IP addresses. Lite agents only provide host candidates and don't perform connectivity checks, making them simpler but less flexible. Use lite mode when:
+  
+  - Your server has a public IP address
+  - You want to reduce complexity on the server side
+  - Clients will be full ICE agents
+  
+  Configure lite mode with:
+  ```go
+  agent, err := ice.NewAgent(&ice.AgentConfig{
+      Lite: true,
+  })
+  ```
+</Accordion>
+
+## Related Topics
+
+- [Agents](/concepts/agents) - Learn about ICE agent lifecycle and configuration
+- [Candidates](/concepts/candidates) - Detailed information on candidate types
+- [Connectivity](/concepts/connectivity) - Connection establishment and maintenance

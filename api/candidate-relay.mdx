@@ -1,0 +1,323 @@
+---
+title: "Relay Candidates"
+description: "Create and configure relay candidates using TURN servers in Pion ICE"
+---
+
+## Overview
+
+Relay candidates are obtained from TURN (Traversal Using Relays around NAT) servers and provide a fallback mechanism when direct peer-to-peer connections are not possible. All media flows through the TURN server, ensuring connectivity even in the most restrictive network environments.
+
+## CandidateRelay
+
+A relay candidate represents an allocated address on a TURN server.
+
+```go candidate_relay.go
+type CandidateRelay struct {
+    candidateBase
+    relayProtocol string
+    onClose       func() error
+}
+```
+
+<ParamField path="relayProtocol" type="string">
+  The protocol used between the endpoint and the relay server ("udp", "tcp", "dtls", or "tls").
+</ParamField>
+
+<ParamField path="onClose" type="func() error">
+  Optional callback function invoked when the candidate is closed, allowing cleanup of TURN allocations.
+</ParamField>
+
+## Creating Relay Candidates
+
+### NewCandidateRelay
+
+Creates a new relay candidate from the provided configuration.
+
+```go
+func NewCandidateRelay(config *CandidateRelayConfig) (*CandidateRelay, error)
+```
+
+<ParamField path="config" type="*CandidateRelayConfig" required>
+  Configuration for the relay candidate.
+</ParamField>
+
+Returns the created `CandidateRelay` or an error if the configuration is invalid (e.g., invalid IP address).
+
+## CandidateRelayConfig
+
+Configuration structure for creating relay candidates.
+
+```go candidate_relay.go
+type CandidateRelayConfig struct {
+    CandidateID   string
+    Network       string
+    Address       string
+    Port          int
+    Component     uint16
+    Priority      uint32
+    Foundation    string
+    RelAddr       string
+    RelPort       int
+    RelayProtocol string
+    OnClose       func() error
+}
+```
+
+### Configuration Fields
+
+<ParamField path="CandidateID" type="string">
+  Unique identifier for the candidate. If empty, a UUID will be automatically generated.
+</ParamField>
+
+<ParamField path="Network" type="string" required>
+  Network protocol: "udp", "tcp", "udp4", "udp6", "tcp4", or "tcp6".
+</ParamField>
+
+<ParamField path="Address" type="string" required>
+  The relayed transport address allocated by the TURN server (public IP address).
+</ParamField>
+
+<ParamField path="Port" type="int" required>
+  Port number of the relayed address.
+</ParamField>
+
+<ParamField path="Component" type="uint16" required>
+  Component identifier. Use `ComponentRTP` (1) for RTP or `ComponentRTCP` (2) for RTCP.
+</ParamField>
+
+<ParamField path="Priority" type="uint32">
+  Custom priority value. If 0, priority will be calculated automatically. Relay candidates have the lowest type preference (0).
+</ParamField>
+
+<ParamField path="Foundation" type="string">
+  Custom foundation string. If empty, foundation will be calculated based on the candidate type, address, and network type.
+</ParamField>
+
+<ParamField path="RelAddr" type="string" required>
+  The base address (host candidate address) from which this relay candidate was derived.
+</ParamField>
+
+<ParamField path="RelPort" type="int" required>
+  The port of the base address.
+</ParamField>
+
+<ParamField path="RelayProtocol" type="string" required>
+  Protocol used for communication between client and TURN server: "udp", "tcp", "tls", or "dtls".
+</ParamField>
+
+<ParamField path="OnClose" type="func() error">
+  Optional callback invoked when closing the candidate to clean up TURN allocations.
+</ParamField>
+
+## Methods
+
+### RelayProtocol
+
+Returns the protocol used between the endpoint and the relay server.
+
+```go
+func (c *CandidateRelay) RelayProtocol() string
+```
+
+<ParamField path="return" type="string">
+  The relay protocol: "udp", "tcp", "tls", or "dtls".
+</ParamField>
+
+## Examples
+
+### Creating a UDP Relay Candidate
+
+```go
+candidate, err := ice.NewCandidateRelay(&ice.CandidateRelayConfig{
+    Network:       "udp",
+    Address:       "203.0.113.1",
+    Port:          60000,
+    Component:     ice.ComponentRTP,
+    RelAddr:       "192.168.1.100",
+    RelPort:       50000,
+    RelayProtocol: "udp",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+// Output: candidate:... 1 udp 16777215 203.0.113.1 60000 typ relay raddr 192.168.1.100 rport 50000
+```
+
+### Creating a TLS Relay Candidate
+
+```go
+candidate, err := ice.NewCandidateRelay(&ice.CandidateRelayConfig{
+    Network:       "tcp",
+    Address:       "203.0.113.1",
+    Port:          60000,
+    Component:     ice.ComponentRTP,
+    RelAddr:       "192.168.1.100",
+    RelPort:       50000,
+    RelayProtocol: "tls",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Protocol:", candidate.RelayProtocol())
+// Output: Protocol: tls
+```
+
+### Relay Candidate with Cleanup Handler
+
+```go
+turnConn := // ... TURN connection
+
+candidate, err := ice.NewCandidateRelay(&ice.CandidateRelayConfig{
+    Network:       "udp",
+    Address:       "203.0.113.1",
+    Port:          60000,
+    Component:     ice.ComponentRTP,
+    RelAddr:       "192.168.1.100",
+    RelPort:       50000,
+    RelayProtocol: "udp",
+    OnClose: func() error {
+        fmt.Println("Closing TURN allocation")
+        return turnConn.Close()
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// When the candidate is closed, the OnClose callback will be invoked
+```
+
+## TURN Server Integration
+
+Relay candidates are typically created after successfully allocating an address on a TURN server. The integration process involves:
+
+1. **Connect to TURN Server** - Establish a connection using the TURN protocol
+2. **Allocate Address** - Request an address allocation from the TURN server
+3. **Create Relay Candidate** - Create a candidate with the allocated address
+4. **Use for ICE** - Add the candidate to your ICE agent for connectivity checks
+
+### Example Integration Flow
+
+```go
+import (
+    "github.com/pion/ice/v4"
+    "github.com/pion/turn/v4"
+)
+
+// Connect to TURN server
+turnServerAddr := "turn.example.com:3478"
+client, err := turn.NewClient(&turn.ClientConfig{
+    TURNServerAddr: turnServerAddr,
+    Username:       "username",
+    Password:       "password",
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+// Allocate relay address
+relayConn, err := client.Allocate()
+if err != nil {
+    log.Fatal(err)
+}
+
+// Get allocated address
+relayAddr := relayConn.LocalAddr().(*net.UDPAddr)
+
+// Create relay candidate
+candidate, err := ice.NewCandidateRelay(&ice.CandidateRelayConfig{
+    Network:       "udp",
+    Address:       relayAddr.IP.String(),
+    Port:          relayAddr.Port,
+    Component:     ice.ComponentRTP,
+    RelAddr:       localAddr,
+    RelPort:       localPort,
+    RelayProtocol: "udp",
+    OnClose: func() error {
+        return relayConn.Close()
+    },
+})
+```
+
+## Relay Protocol Preferences
+
+The relay protocol affects the local preference calculation, influencing candidate priority:
+
+<ResponseField name="UDP" type="protocol">
+  **Preference: 3** - Highest preference for relay protocols. Provides best performance.
+</ResponseField>
+
+<ResponseField name="DTLS" type="protocol">
+  **Preference: 2** - Encrypted UDP transport.
+</ResponseField>
+
+<ResponseField name="TCP" type="protocol">
+  **Preference: 1** - Reliable transport but higher overhead.
+</ResponseField>
+
+<ResponseField name="TLS" type="protocol">
+  **Preference: 0** - Encrypted TCP transport with highest overhead.
+</ResponseField>
+
+## Priority Calculation
+
+Relay candidates have the lowest type preference (0) among all candidate types:
+
+```
+priority = (2^24 * 0) + (2^8 * relay-local-preference) + (256 - component)
+```
+
+The relay local preference is determined by the `RelayProtocol`:
+
+- UDP: 3 (highest)
+- DTLS: 2
+- TCP: 1  
+- TLS: 0 (lowest)
+
+## When to Use Relay Candidates
+
+Relay candidates should be used when:
+
+- Direct peer-to-peer connections fail
+- Both peers are behind symmetric NATs
+- Firewall rules block direct connections
+- Server reflexive candidates fail
+- Guaranteed connectivity is required
+
+<Note>
+Relay candidates consume server resources and bandwidth. Use them as a fallback mechanism when other candidate types cannot establish connectivity.
+</Note>
+
+## Related Address
+
+Relay candidates include a related address that indicates the base (host) address from which the relay was obtained. This information is useful for diagnostics:
+
+```go
+relatedAddr := candidate.RelatedAddress()
+if relatedAddr != nil {
+    fmt.Printf("Base address: %s:%d\n", relatedAddr.Address, relatedAddr.Port)
+}
+```
+
+## Connection Characteristics
+
+**Advantages:**
+- Works in all network environments
+- Guaranteed connectivity
+- Supports both UDP and TCP
+- Can traverse any NAT or firewall
+
+**Disadvantages:**
+- Higher latency (media flows through TURN server)
+- Increased bandwidth costs (server relays all traffic)
+- Lower quality compared to direct connections
+- Requires TURN server infrastructure
+
+## See Also
+
+- [Candidate Types](/api/candidate-types) - Core candidate interfaces and types
+- [Host Candidates](/api/candidate-host) - Direct local interface candidates
+- [Server Reflexive Candidates](/api/candidate-server-reflexive) - STUN-based candidates

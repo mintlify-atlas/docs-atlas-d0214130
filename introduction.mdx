@@ -1,0 +1,126 @@
+---
+title: Introduction
+description: A Go implementation of the Interactive Connectivity Establishment (ICE) protocol for WebRTC and P2P applications
+---
+
+## What is Pion ICE?
+
+Pion ICE is a pure Go implementation of the Interactive Connectivity Establishment (ICE) protocol, as defined in [RFC 5245](https://datatracker.ietf.org/doc/html/rfc5245). ICE is a framework used by WebRTC and other peer-to-peer applications to establish network connections between peers, even when they are behind NATs or firewalls.
+
+<Info>
+Pion ICE is part of the larger [Pion WebRTC](https://github.com/pion/webrtc) project, which provides a complete WebRTC implementation in Go.
+</Info>
+
+## Why ICE?
+
+Establishing direct peer-to-peer connections over the internet is challenging due to:
+
+- **NAT traversal**: Most devices sit behind Network Address Translation (NAT), making direct connections difficult
+- **Firewall restrictions**: Corporate and residential firewalls often block incoming connections
+- **Multiple network interfaces**: Devices may have several network paths (WiFi, Ethernet, cellular)
+- **Connection reliability**: Networks may change during a session
+
+ICE solves these problems by:
+
+1. Gathering multiple candidate addresses (local, server-reflexive, relay)
+2. Exchanging candidates with the remote peer
+3. Testing candidate pairs to find working connections
+4. Selecting the best path based on priority and latency
+
+## Key Features
+
+Pion ICE provides a complete ICE implementation with:
+
+<CardGroup cols={2}>
+  <Card title="Full ICE Support" icon="network-wired">
+    Complete implementation of RFC 5245 with support for all candidate types: host, server-reflexive, peer-reflexive, and relay
+  </Card>
+  
+  <Card title="Multiple Transports" icon="arrows-spin">
+    Support for UDP, TCP (passive and active), and multiplexing for efficient port usage
+  </Card>
+  
+  <Card title="STUN & TURN" icon="server">
+    Built-in support for STUN servers (NAT discovery) and TURN servers (relay) with TLS/DTLS encryption
+  </Card>
+  
+  <Card title="Continual Gathering" icon="refresh">
+    Dynamic candidate gathering that responds to network changes during a session
+  </Card>
+  
+  <Card title="mDNS Support" icon="broadcast-tower">
+    Local network discovery using Multicast DNS for privacy-preserving local connections
+  </Card>
+  
+  <Card title="Lite Mode" icon="feather">
+    Lightweight ICE implementation for servers that only provide host candidates
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+### WebRTC Applications
+
+Pion ICE is the foundation for WebRTC connectivity in Go applications:
+
+- Video conferencing platforms
+- Real-time collaboration tools
+- Live streaming services
+- Browser-to-server communication
+
+### Peer-to-Peer Networking
+
+Build P2P applications without browser constraints:
+
+- Distributed systems and microservices
+- File sharing and synchronization
+- Gaming backends with direct peer connections
+- IoT device communication
+
+### NAT Traversal Solutions
+
+Use ICE for any application requiring NAT traversal:
+
+- VoIP and telephony systems
+- Remote desktop and control applications
+- Tunneling and proxy services
+
+## Connection States
+
+ICE connections progress through several states:
+
+```go
+ConnectionStateNew          // Agent is gathering addresses
+ConnectionStateChecking     // Testing candidate pairs
+ConnectionStateConnected    // Found working pair, still checking others
+ConnectionStateCompleted    // Finished checking all pairs
+ConnectionStateFailed       // No working connection found
+ConnectionStateDisconnected // Lost connection
+ConnectionStateClosed       // Agent shut down
+```
+
+## Architecture Overview
+
+At the core of Pion ICE is the `Agent` type, which:
+
+- Manages candidate gathering from local interfaces
+- Coordinates with STUN/TURN servers
+- Performs connectivity checks with remote candidates
+- Maintains connection state and handles keepalives
+- Provides a `net.Conn` interface for data transfer
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get started by installing Pion ICE in your Go project
+  </Card>
+  
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first ICE connection with a complete example
+  </Card>
+</CardGroup>
+
+<Note>
+Pion ICE requires **Go 1.24.0** or later for full compatibility with the latest features.
+</Note>

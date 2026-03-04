@@ -1,0 +1,424 @@
+---
+title: "TCP Mux"
+description: "TCP connection multiplexing for ICE-TCP and active TCP candidates"
+---
+
+## Overview
+
+TCP Mux enables multiplexing of TCP connections for ICE, allowing multiple ICE connections to share TCP ports. This is particularly useful for ICE-TCP scenarios where UDP is blocked or unavailable.
+
+Unlike UDP where packets can be easily demultiplexed, TCP is connection-oriented. The TCP Mux accepts incoming TCP connections and groups them by username fragment (ufrag) after inspecting the first STUN message, then presents them as `PacketConn` interfaces for compatibility with the ICE agent.
+
+## TCPMux Interface
+
+The `TCPMux` interface defines the contract for TCP multiplexing implementations.
+
+```go
+type TCPMux interface {
+    io.Closer
+    GetConnByUfrag(ufrag string, isIPv6 bool, local net.IP) (net.PacketConn, error)
+    RemoveConnByUfrag(ufrag string)
+}
+```
+
+### Methods
+
+<ParamField path="GetConnByUfrag" type="func(ufrag string, isIPv6 bool, local net.IP) (net.PacketConn, error)">
+  Returns a `PacketConn` for the given username fragment. Creates a new connection if one doesn't exist.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment from the ICE credentials
+  - `isIPv6` - Whether this is an IPv6 connection
+  - `local` - The local IP address to bind to
+  
+  **Returns:** A `net.PacketConn` that aggregates TCP connections for this ufrag
+</ParamField>
+
+<ParamField path="RemoveConnByUfrag" type="func(ufrag string)">
+  Closes and removes all TCP connections associated with the given username fragment.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment identifying the connections to remove
+</ParamField>
+
+<ParamField path="Close" type="func() error">
+  Closes the listener and all associated connections. No further connections can be created after closing.
+  
+  **Returns:** An error if the close operation fails
+</ParamField>
+
+## TCPMuxDefault
+
+`TCPMuxDefault` is the default implementation of the `TCPMux` interface. It accepts TCP connections, reads the first STUN packet to extract the ufrag, and multiplexes connections accordingly.
+
+### Creating a TCPMuxDefault
+
+```go
+func NewTCPMuxDefault(params TCPMuxParams) *TCPMuxDefault
+```
+
+Creates a new TCP mux that starts accepting connections immediately.
+
+### TCPMuxParams
+
+<ParamField path="Listener" type="net.Listener" required>
+  The TCP listener that accepts incoming connections.
+</ParamField>
+
+<ParamField path="Logger" type="logging.LeveledLogger">
+  Logger instance for the mux. If nil, a default logger will be created.
+</ParamField>
+
+<ParamField path="ReadBufferSize" type="int">
+  Maximum buffer size for read operations. Determines how many packets can be buffered per connection.
+</ParamField>
+
+<ParamField path="WriteBufferSize" type="int">
+  Maximum buffer size for write operations. If set to 0, writes block until the packet is sent. If the buffer is full, subsequent packets are dropped.
+  
+  **Recommended:** 4MB (4 * 1024 * 1024) for production use.
+</ParamField>
+
+<ParamField path="FirstStunBindTimeout" type="time.Duration">
+  Timeout for receiving the first STUN binding request after a connection is established. Connections that don't send a STUN message within this timeout are closed.
+  
+  **Default:** 30 seconds
+</ParamField>
+
+<ParamField path="AliveDurationForConnFromStun" type="time.Duration">
+  Timeout for connections created from unknown STUN usernames. If the connection is not used within this duration, it will be removed.
+  
+  **Default:** 30 seconds
+</ParamField>
+
+### Example: Basic TCP Mux
+
+<CodeGroup>
+```go Basic Usage
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create TCP listener
+    listener, err := net.Listen("tcp", "0.0.0.0:8443")
+    if err != nil {
+        panic(err)
+    }
+    
+    // Create TCP mux
+    mux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener,
+        WriteBufferSize: 4 * 1024 * 1024, // 4MB
+    })
+    defer mux.Close()
+    
+    // Get a connection for a specific ufrag
+    localIP := net.ParseIP("192.168.1.100")
+    packetConn, err := mux.GetConnByUfrag("myufrag", false, localIP)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Use packetConn with ICE agent...
+}
+```
+
+```go With Custom Timeouts
+package main
+
+import (
+    "net"
+    "time"
+    "github.com/pion/ice/v4"
+    "github.com/pion/logging"
+)
+
+func main() {
+    listener, _ := net.Listen("tcp", ":8443")
+    
+    loggerFactory := logging.NewDefaultLoggerFactory()
+    logger := loggerFactory.NewLogger("tcp-mux")
+    
+    mux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:                     listener,
+        Logger:                       logger,
+        ReadBufferSize:               2 * 1024 * 1024,  // 2MB
+        WriteBufferSize:              4 * 1024 * 1024,  // 4MB
+        FirstStunBindTimeout:         10 * time.Second,
+        AliveDurationForConnFromStun: 60 * time.Second,
+    })
+    defer mux.Close()
+}
+```
+</CodeGroup>
+
+<Note>
+The TCP mux automatically starts accepting connections when created. Make sure your listener is properly configured before passing it to `NewTCPMuxDefault`.
+</Note>
+
+## MultiTCPMuxDefault
+
+`MultiTCPMuxDefault` allows multiple `TCPMux` instances to be used together, enabling listening on multiple ports or addresses simultaneously. It implements both `TCPMux` and `AllConnsGetter` interfaces.
+
+### Creating a MultiTCPMuxDefault
+
+```go
+func NewMultiTCPMuxDefault(muxes ...TCPMux) *MultiTCPMuxDefault
+```
+
+Creates a multi-mux from existing `TCPMux` instances.
+
+### AllConnsGetter Interface
+
+The `AllConnsGetter` interface provides a method to get connections from all underlying muxes:
+
+```go
+type AllConnsGetter interface {
+    GetAllConns(ufrag string, isIPv6 bool, localIP net.IP) ([]net.PacketConn, error)
+}
+```
+
+<ParamField path="GetAllConns" type="func(ufrag string, isIPv6 bool, localIP net.IP) ([]net.PacketConn, error)">
+  Returns a `PacketConn` for each underlying TCP mux, allowing the ICE agent to use multiple TCP ports simultaneously.
+  
+  **Parameters:**
+  - `ufrag` - The username fragment from the ICE credentials
+  - `isIPv6` - Whether this is an IPv6 connection
+  - `localIP` - The local IP address to bind to
+  
+  **Returns:** A slice of `net.PacketConn`, one for each mux
+</ParamField>
+
+### Example: Multiple TCP Ports
+
+<CodeGroup>
+```go Multiple Ports
+package main
+
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Create listeners on different ports
+    listener1, _ := net.Listen("tcp", ":8443")
+    listener2, _ := net.Listen("tcp", ":8444")
+    listener3, _ := net.Listen("tcp", ":8445")
+    
+    // Create individual muxes
+    mux1 := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener1,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    mux2 := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener2,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    mux3 := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener3,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    // Combine them
+    multiMux := ice.NewMultiTCPMuxDefault(mux1, mux2, mux3)
+    defer multiMux.Close()
+    
+    // Get connections from all muxes
+    localIP := net.ParseIP("192.168.1.100")
+    conns, err := multiMux.GetAllConns("myufrag", false, localIP)
+    if err != nil {
+        panic(err)
+    }
+    
+    // Use all connections with ICE agent...
+    println("Created", len(conns), "connections")
+}
+```
+
+```go IPv4 and IPv6
+package main
+
+import (
+    "net"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    // Listen on IPv4
+    listener4, _ := net.Listen("tcp4", ":8443")
+    mux4 := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener4,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    // Listen on IPv6
+    listener6, _ := net.Listen("tcp6", ":8443")
+    mux6 := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+        Listener:        listener6,
+        WriteBufferSize: 4 * 1024 * 1024,
+    })
+    
+    // Combine for dual-stack support
+    multiMux := ice.NewMultiTCPMuxDefault(mux4, mux6)
+    defer multiMux.Close()
+}
+```
+</CodeGroup>
+
+## TCP Packet Framing
+
+TCP is a stream protocol, so packets need to be framed. The TCP mux uses RFC 4571 framing:
+
+- Each packet is prefixed with a 2-byte length header (big-endian)
+- The length indicates the size of the packet that follows
+- This allows the receiver to know where one packet ends and the next begins
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+-----------------------------------------------------------------
+|             LENGTH            |  STUN/RTP/RTCP packet ...     |
+-----------------------------------------------------------------
+```
+
+<Info>
+The framing is handled automatically by the TCP mux. You don't need to implement it yourself when using the `PacketConn` interface.
+</Info>
+
+## How TCP Mux Works
+
+1. **Accept Connection**: The mux accepts a new TCP connection from a remote peer.
+
+2. **First Packet Timeout**: The connection must send a STUN binding request within `FirstStunBindTimeout` (default 30s) or it will be closed.
+
+3. **Extract Ufrag**: The mux reads the first STUN packet, extracts the USERNAME attribute, and uses the first part (before the colon) as the ufrag.
+
+4. **Connection Assignment**: The TCP connection is assigned to the `PacketConn` associated with that ufrag. If no connection exists, one is created.
+
+5. **Packet Routing**: All subsequent packets on that TCP connection are routed to the same `PacketConn`.
+
+6. **Multiple Connections**: A single ufrag can have multiple TCP connections from different remote addresses, all multiplexed into the same `PacketConn`.
+
+## Use Cases
+
+### Enterprise Networks
+
+Many corporate networks block UDP traffic entirely. TCP Mux enables WebRTC to work in these environments:
+
+```go
+mux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:        listener,
+    WriteBufferSize: 4 * 1024 * 1024,
+})
+
+agent, err := ice.NewAgent(&ice.AgentConfig{
+    NetworkTypes: []ice.NetworkType{ice.NetworkTypeTCP4},
+    TCPMux:       mux,
+})
+```
+
+### Firewall-Friendly Applications
+
+Reduce the number of ports that need to be opened in firewalls:
+
+```go
+// Single TCP port (8443) handles all ICE connections
+listener, _ := net.Listen("tcp", ":8443")
+mux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:        listener,
+    WriteBufferSize: 4 * 1024 * 1024,
+})
+```
+
+### High-Security Environments
+
+Some environments require all traffic to go over TCP for deep packet inspection:
+
+```go
+// TLS wrapper can be added for encrypted TCP
+tlsListener := tls.NewListener(listener, tlsConfig)
+mux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+    Listener:        tlsListener,
+    WriteBufferSize: 4 * 1024 * 1024,
+})
+```
+
+## Best Practices
+
+1. **Write Buffer Size**: Always set a write buffer size for production. Without it, writes block, which can cause performance issues:
+   ```go
+   ice.TCPMuxParams{
+       WriteBufferSize: 4 * 1024 * 1024, // 4MB recommended
+   }
+   ```
+
+2. **Timeout Configuration**: Adjust timeouts based on your network conditions:
+   ```go
+   ice.TCPMuxParams{
+       FirstStunBindTimeout:         10 * time.Second, // Faster timeout for good networks
+       AliveDurationForConnFromStun: 60 * time.Second, // Longer for slow networks
+   }
+   ```
+
+3. **Resource Management**: Always close the mux to clean up resources:
+   ```go
+   mux := ice.NewTCPMuxDefault(params)
+   defer mux.Close()
+   ```
+
+4. **Dual Stack**: Support both IPv4 and IPv6 by creating separate muxes:
+   ```go
+   listener4, _ := net.Listen("tcp4", ":8443")
+   listener6, _ := net.Listen("tcp6", ":8443")
+   
+   mux4 := ice.NewTCPMuxDefault(ice.TCPMuxParams{Listener: listener4, WriteBufferSize: 4 * 1024 * 1024})
+   mux6 := ice.NewTCPMuxDefault(ice.TCPMuxParams{Listener: listener6, WriteBufferSize: 4 * 1024 * 1024})
+   
+   multiMux := ice.NewMultiTCPMuxDefault(mux4, mux6)
+   ```
+
+5. **Error Handling**: Monitor logs for connection failures and adjust timeouts accordingly.
+
+## Performance Considerations
+
+<Note>
+**TCP vs UDP Performance**
+
+TCP multiplexing has higher overhead than UDP multiplexing due to:
+- Connection establishment (3-way handshake)
+- Connection state management
+- Packet framing overhead (2 bytes per packet)
+- Head-of-line blocking in the TCP stack
+
+For best performance, prefer UDP mux when possible. Use TCP mux only when UDP is unavailable.
+</Note>
+
+### Memory Usage
+
+Each TCP connection maintains:
+- Read buffer (configurable via `ReadBufferSize`)
+- Write buffer (configurable via `WriteBufferSize`)
+- TCP stack buffers (OS-managed)
+
+For 100 concurrent connections with 4MB write buffers: ~400MB memory
+
+### Buffer Sizing
+
+- **Small buffers** (< 1MB): Lower memory usage, but increased risk of packet drops under load
+- **Large buffers** (4-8MB): Better handling of traffic bursts, higher memory usage
+- **No buffer** (0): Lowest memory, but writes block and can cause congestion
+
+## Related
+
+- [UDP Mux](/api/udp-mux) - UDP connection multiplexing
+- [Universal Mux](/api/universal-mux) - Combined UDP mux with STUN/TURN support
+- [Agent Options](/api/agent-options) - Using muxes with ICE agents
+- [TCP Support](/advanced/tcp-support) - Understanding ICE over TCP

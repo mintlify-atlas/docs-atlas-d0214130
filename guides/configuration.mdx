@@ -1,0 +1,372 @@
+---
+title: Configuration
+description: Configure your ICE agent with AgentOptions and network settings
+---
+
+The Pion ICE library provides flexible configuration through the `AgentOption` pattern. This guide covers how to configure your ICE agent with STUN/TURN servers, network types, candidate types, timeouts, and other essential settings.
+
+## Creating an Agent
+
+There are two ways to create an ICE agent:
+
+<CodeGroup>
+```go Using AgentOptions (Recommended)
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(stunURLs),
+    ice.WithPortRange(10000, 20000),
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
+)
+```
+
+```go Using AgentConfig (Deprecated)
+config := &ice.AgentConfig{
+    Urls: stunURLs,
+    PortMin: 10000,
+    PortMax: 20000,
+    NetworkTypes: []ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6},
+}
+agent, err := ice.NewAgent(config)
+```
+</CodeGroup>
+
+<Note>
+The `AgentConfig` approach is deprecated. Use `NewAgentWithOptions` with functional options instead.
+</Note>
+
+## STUN/TURN Server Configuration
+
+Configure STUN and TURN servers to enable server reflexive and relay candidates:
+
+```go
+import "github.com/pion/stun/v3"
+
+stunURLs := []*stun.URI{
+    {Scheme: stun.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+    {Scheme: stun.SchemeTypeTURN, Host: "turn.example.com", Port: 3478, 
+     Username: "user", Password: "pass"},
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(stunURLs),
+)
+```
+
+### TURN Protocols
+
+TURN supports multiple transport protocols:
+
+- **UDP**: `turn://turn.example.com:3478`
+- **TCP**: `turn://turn.example.com:3478?transport=tcp`
+- **TLS**: `turns://turn.example.com:5349?transport=tcp`
+- **DTLS**: `turns://turn.example.com:5349?transport=udp`
+
+```go
+turnURLs := []*stun.URI{
+    // TURN over UDP
+    {Scheme: stun.SchemeTypeTURN, Proto: stun.ProtoTypeUDP,
+     Host: "turn.example.com", Port: 3478, Username: "user", Password: "pass"},
+    // TURN over TLS
+    {Scheme: stun.SchemeTypeTURNS, Proto: stun.ProtoTypeTCP,
+     Host: "turn.example.com", Port: 5349, Username: "user", Password: "pass"},
+}
+```
+
+## Network Types
+
+Control which network types are used for candidate gathering:
+
+```go
+// Enable only IPv4 UDP
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+)
+
+// Enable IPv4 and IPv6 UDP
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+    }),
+)
+
+// Enable UDP and TCP
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeTCP4,
+    }),
+)
+```
+
+### Available Network Types
+
+- `NetworkTypeUDP4` - UDP over IPv4
+- `NetworkTypeUDP6` - UDP over IPv6
+- `NetworkTypeTCP4` - TCP over IPv4 (requires TCPMux)
+- `NetworkTypeTCP6` - TCP over IPv6 (requires TCPMux)
+
+## Candidate Types
+
+Specify which candidate types to gather:
+
+```go
+// Gather all candidate types (default)
+agent, err := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+        ice.CandidateTypeServerReflexive,
+        ice.CandidateTypeRelay,
+    }),
+)
+
+// Only gather host candidates
+agent, err := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+    }),
+)
+
+// Only gather relay candidates (force TURN)
+agent, err := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeRelay,
+    }),
+)
+```
+
+## Port Range Configuration
+
+Restrict the UDP port range for host candidates:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithPortRange(10000, 20000),
+)
+```
+
+<Info>
+Port range configuration is ignored when using UDPMux, as the mux manages a single port.
+</Info>
+
+## Timeout Configuration
+
+Configure various timeouts for connectivity and gathering:
+
+### Connectivity Timeouts
+
+```go
+import "time"
+
+agent, err := ice.NewAgentWithOptions(
+    // Time before transitioning to disconnected state (default: 5s)
+    ice.WithDisconnectedTimeout(5 * time.Second),
+    
+    // Time before transitioning to failed after disconnected (default: 25s)
+    ice.WithFailedTimeout(25 * time.Second),
+    
+    // Keepalive interval for selected pair (default: 2s)
+    ice.WithKeepaliveInterval(2 * time.Second),
+    
+    // Connectivity check interval during connecting state (default: 200ms)
+    ice.WithCheckInterval(200 * time.Millisecond),
+)
+```
+
+### Gathering Timeout
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    // Timeout for STUN server responses (default: 5s)
+    ice.WithSTUNGatherTimeout(5 * time.Second),
+)
+```
+
+### Candidate Selection Timeouts
+
+Control minimum wait times before nominating each candidate type:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    // Wait before selecting host candidates (default: 0ms)
+    ice.WithHostAcceptanceMinWait(0 * time.Millisecond),
+    
+    // Wait before selecting srflx candidates (default: 500ms)
+    ice.WithSrflxAcceptanceMinWait(500 * time.Millisecond),
+    
+    // Wait before selecting prflx candidates (default: 1000ms)
+    ice.WithPrflxAcceptanceMinWait(1000 * time.Millisecond),
+    
+    // Wait before selecting relay candidates (default: 2000ms)
+    ice.WithRelayAcceptanceMinWait(2000 * time.Millisecond),
+)
+```
+
+## Interface and IP Filtering
+
+Filter network interfaces and IP addresses during candidate gathering:
+
+```go
+// Only use interfaces starting with "eth"
+agent, err := ice.NewAgentWithOptions(
+    ice.WithInterfaceFilter(func(interfaceName string) bool {
+        return len(interfaceName) >= 3 && interfaceName[:3] == "eth"
+    }),
+)
+
+// Only use private IP addresses
+agent, err := ice.NewAgentWithOptions(
+    ice.WithIPFilter(func(ip net.IP) bool {
+        return ip.IsPrivate()
+    }),
+)
+```
+
+## ICE Lite Mode
+
+Configure the agent to run in ICE Lite mode:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithICELite(true),
+)
+```
+
+<Warning>
+ICE Lite agents do not perform connectivity checks and only provide host candidates. Use this mode for servers behind a known public IP.
+</Warning>
+
+## Local Credentials
+
+Set custom ICE username fragment and password:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithLocalCredentials("customUfrag", "customPassword"),
+)
+```
+
+<Info>
+The username fragment must have at least 24 bits of randomness (3 characters), and the password must have at least 128 bits (16 characters). If empty strings are provided, random values will be generated.
+</Info>
+
+## Maximum Binding Requests
+
+Control the maximum number of binding requests before marking a pair as failed:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithMaxBindingRequests(7), // default is 7
+)
+```
+
+## Logging
+
+Configure logging for the ICE agent:
+
+```go
+import "github.com/pion/logging"
+
+loggerFactory := logging.NewDefaultLoggerFactory()
+loggerFactory.DefaultLogLevel = logging.LogLevelDebug
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithLoggerFactory(loggerFactory),
+)
+```
+
+## Proxy Support
+
+Configure a proxy dialer for TURN over TCP/TLS:
+
+```go
+import "golang.org/x/net/proxy"
+
+dialer, err := proxy.SOCKS5("tcp", "proxy.example.com:1080", nil, proxy.Direct)
+if err != nil {
+    panic(err)
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithProxyDialer(dialer),
+)
+```
+
+## Complete Example
+
+Here's a complete example combining multiple configuration options:
+
+```go
+import (
+    "time"
+    "github.com/pion/ice/v4"
+    "github.com/pion/logging"
+    "github.com/pion/stun/v3"
+)
+
+func createAgent() (*ice.Agent, error) {
+    // Configure STUN/TURN servers
+    urls := []*stun.URI{
+        {Scheme: stun.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+        {Scheme: stun.SchemeTypeTURN, Host: "turn.example.com", Port: 3478,
+         Username: "user", Password: "pass"},
+    }
+    
+    // Configure logger
+    loggerFactory := logging.NewDefaultLoggerFactory()
+    loggerFactory.DefaultLogLevel = logging.LogLevelInfo
+    
+    // Create agent with options
+    return ice.NewAgentWithOptions(
+        ice.WithUrls(urls),
+        ice.WithPortRange(10000, 20000),
+        ice.WithNetworkTypes([]ice.NetworkType{
+            ice.NetworkTypeUDP4,
+            ice.NetworkTypeUDP6,
+        }),
+        ice.WithCandidateTypes([]ice.CandidateType{
+            ice.CandidateTypeHost,
+            ice.CandidateTypeServerReflexive,
+            ice.CandidateTypeRelay,
+        }),
+        ice.WithDisconnectedTimeout(5 * time.Second),
+        ice.WithFailedTimeout(25 * time.Second),
+        ice.WithKeepaliveInterval(2 * time.Second),
+        ice.WithLoggerFactory(loggerFactory),
+    )
+}
+```
+
+## Default Values
+
+The following table shows the default values for key configuration options:
+
+| Option | Default Value | Source |
+|--------|--------------|--------|
+| Check Interval | 200ms | `agent_config.go:18` |
+| Keepalive Interval | 2s | `agent_config.go:21` |
+| Disconnected Timeout | 5s | `agent_config.go:24` |
+| Failed Timeout | 25s | `agent_config.go:27` |
+| Host Acceptance Wait | 0ms | `agent_config.go:30` |
+| Srflx Acceptance Wait | 500ms | `agent_config.go:33` |
+| Prflx Acceptance Wait | 1000ms | `agent_config.go:36` |
+| Relay Acceptance Wait | 2000ms | `agent_config.go:39` |
+| STUN Gather Timeout | 5s | `agent_config.go:45` |
+| Max Binding Requests | 7 | `agent_config.go:48` |
+| TCP Priority Offset | 27 | `agent_config.go:52` |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Candidate Gathering" icon="magnifying-glass" href="./gathering">
+    Learn how to gather ICE candidates
+  </Card>
+  <Card title="Connectivity Checks" icon="check" href="./connectivity-checks">
+    Understand how ICE performs connectivity checks
+  </Card>
+  <Card title="Multiplexing" icon="network-wired" href="./multiplexing">
+    Share ports with UDPMux and TCPMux
+  </Card>
+  <Card title="NAT Traversal" icon="route" href="./nat-traversal">
+    Configure NAT traversal and address rewriting
+  </Card>
+</CardGroup>

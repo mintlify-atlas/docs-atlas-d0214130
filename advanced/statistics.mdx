@@ -1,0 +1,536 @@
+---
+title: ICE Statistics
+description: Monitor connection quality, candidate pairs, and network metrics with comprehensive statistics APIs
+---
+
+Pion ICE provides detailed statistics for monitoring connection quality, analyzing candidate pair performance, and debugging network issues. Statistics are accessible through thread-safe APIs that return snapshots of current metrics.
+
+## Candidate Pair Statistics
+
+The primary statistics interface provides detailed metrics for candidate pairs:
+
+```go stats.go
+type CandidatePairStats struct {
+    // Timestamp is the timestamp associated with this object.
+    Timestamp time.Time
+
+    // LocalCandidateID is the ID of the local candidate
+    LocalCandidateID string
+
+    // RemoteCandidateID is the ID of the remote candidate
+    RemoteCandidateID string
+
+    // State represents the state of the checklist for the local and remote
+    // candidates in a pair.
+    State CandidatePairState
+
+    // Nominated is true when this valid pair that should be used for media
+    // if it is the highest-priority one amongst those whose nominated flag is set
+    Nominated bool
+
+    // PacketsSent represents the total number of packets sent on this candidate pair.
+    PacketsSent uint32
+
+    // PacketsReceived represents the total number of packets received on this candidate pair.
+    PacketsReceived uint32
+
+    // BytesSent represents the total number of payload bytes sent on this candidate pair
+    // not including headers or padding.
+    BytesSent uint64
+
+    // BytesReceived represents the total number of payload bytes received on this candidate pair
+    // not including headers or padding.
+    BytesReceived uint64
+
+    // LastPacketSentTimestamp represents the timestamp at which the last packet was
+    // sent on this particular candidate pair, excluding STUN packets.
+    LastPacketSentTimestamp time.Time
+
+    // LastPacketReceivedTimestamp represents the timestamp at which the last packet
+    // was received on this particular candidate pair, excluding STUN packets.
+    LastPacketReceivedTimestamp time.Time
+
+    // TotalRoundTripTime represents the sum of all round trip time measurements
+    // in seconds since the beginning of the session, based on STUN connectivity
+    // check responses.
+    TotalRoundTripTime float64
+
+    // CurrentRoundTripTime represents the latest round trip time measured in seconds,
+    // computed from both STUN connectivity checks, including those that are sent
+    // for consent verification.
+    CurrentRoundTripTime float64
+
+    // RequestsReceived represents the total number of connectivity check requests
+    // received (including retransmissions).
+    RequestsReceived uint64
+
+    // RequestsSent represents the total number of connectivity check requests
+    // sent (not including retransmissions).
+    RequestsSent uint64
+
+    // ResponsesReceived represents the total number of connectivity check responses received.
+    ResponsesReceived uint64
+
+    // ResponsesSent represents the total number of connectivity check responses sent.
+    ResponsesSent uint64
+}
+```
+
+## Getting Statistics
+
+### All Candidate Pairs
+
+Retrieve statistics for all candidate pairs in the checklist:
+
+```go
+stats := agent.GetCandidatePairsStats()
+
+for _, pair := range stats {
+    fmt.Printf("Pair: %s <-> %s\n", pair.LocalCandidateID, pair.RemoteCandidateID)
+    fmt.Printf("  State: %s\n", pair.State)
+    fmt.Printf("  Nominated: %v\n", pair.Nominated)
+    fmt.Printf("  RTT: %.3fs\n", pair.CurrentRoundTripTime)
+    fmt.Printf("  Bytes sent: %d, received: %d\n", pair.BytesSent, pair.BytesReceived)
+    fmt.Printf("  Packets sent: %d, received: %d\n", pair.PacketsSent, pair.PacketsReceived)
+}
+```
+
+### Selected Candidate Pair
+
+Get statistics for only the currently selected (nominated) pair:
+
+```go
+stats, ok := agent.GetSelectedCandidatePairStats()
+if !ok {
+    fmt.Println("No selected candidate pair yet")
+    return
+}
+
+fmt.Printf("Selected pair RTT: %.3fs\n", stats.CurrentRoundTripTime)
+fmt.Printf("Total data sent: %d bytes\n", stats.BytesSent)
+fmt.Printf("Total data received: %d bytes\n", stats.BytesReceived)
+```
+
+<Note>
+`GetSelectedCandidatePairStats` returns `false` if no pair has been nominated yet. Check the boolean return value before accessing statistics.
+</Note>
+
+## Candidate Statistics
+
+Get information about individual local or remote candidates:
+
+```go stats.go
+type CandidateStats struct {
+    // Timestamp is the timestamp associated with this object.
+    Timestamp time.Time
+
+    // ID is the candidate ID
+    ID string
+
+    // NetworkType represents the type of network interface used by the base of a
+    // local candidate.
+    NetworkType NetworkType
+
+    // IP is the IP address of the candidate
+    IP string
+
+    // Port is the port number of the candidate.
+    Port int
+
+    // CandidateType is the "Type" field of the ICECandidate.
+    CandidateType CandidateType
+
+    // Priority is the "Priority" field of the ICECandidate.
+    Priority uint32
+
+    // URL is the URL of the TURN or STUN server indicated in the that translated
+    // this IP address.
+    URL string
+
+    // RelayProtocol is the protocol used by the endpoint to communicate with the
+    // TURN server. Valid values: UDP, TCP, or TLS.
+    RelayProtocol string
+
+    // Deleted is true if the candidate has been deleted/freed.
+    Deleted bool
+}
+```
+
+### Local Candidates
+
+```go
+localStats := agent.GetLocalCandidatesStats()
+
+for _, cand := range localStats {
+    fmt.Printf("Local: %s %s:%d (type=%s, priority=%d)\n",
+        cand.NetworkType, cand.IP, cand.Port, cand.CandidateType, cand.Priority)
+    
+    if cand.CandidateType == ice.CandidateTypeRelay {
+        fmt.Printf("  TURN server: %s (protocol: %s)\n", cand.URL, cand.RelayProtocol)
+    }
+}
+```
+
+### Remote Candidates
+
+```go
+remoteStats := agent.GetRemoteCandidatesStats()
+
+for _, cand := range remoteStats {
+    fmt.Printf("Remote: %s %s:%d (type=%s)\n",
+        cand.NetworkType, cand.IP, cand.Port, cand.CandidateType)
+}
+```
+
+## Monitoring Connection Quality
+
+### Real-Time RTT Monitoring
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+    
+    "github.com/pion/ice/v4"
+)
+
+func monitorConnectionQuality(agent *ice.Agent) {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for range ticker.C {
+        stats, ok := agent.GetSelectedCandidatePairStats()
+        if !ok {
+            continue
+        }
+        
+        // Monitor RTT
+        rtt := stats.CurrentRoundTripTime
+        if rtt > 0.3 {
+            fmt.Printf("WARNING: High RTT detected: %.3fs\n", rtt)
+        }
+        
+        // Monitor packet loss
+        totalSent := stats.PacketsSent
+        totalReceived := stats.PacketsReceived
+        if totalSent > 0 {
+            lossRate := float64(totalSent-totalReceived) / float64(totalSent) * 100
+            if lossRate > 5.0 {
+                fmt.Printf("WARNING: Packet loss: %.2f%%\n", lossRate)
+            }
+        }
+        
+        // Monitor data rates
+        timeSinceStart := time.Since(stats.Timestamp).Seconds()
+        if timeSinceStart > 0 {
+            sendRate := float64(stats.BytesSent) / timeSinceStart / 1024 / 1024 // MB/s
+            recvRate := float64(stats.BytesReceived) / timeSinceStart / 1024 / 1024
+            fmt.Printf("Rates - Send: %.2f MB/s, Recv: %.2f MB/s\n", sendRate, recvRate)
+        }
+    }
+}
+```
+
+### Bandwidth Estimation
+
+```go
+type BandwidthEstimator struct {
+    lastStats     ice.CandidatePairStats
+    lastCheckTime time.Time
+}
+
+func (b *BandwidthEstimator) Update(stats ice.CandidatePairStats) (sendBW, recvBW float64) {
+    if b.lastCheckTime.IsZero() {
+        b.lastStats = stats
+        b.lastCheckTime = time.Now()
+        return 0, 0
+    }
+    
+    elapsed := time.Since(b.lastCheckTime).Seconds()
+    if elapsed < 1.0 {
+        return 0, 0 // Need at least 1 second interval
+    }
+    
+    // Calculate bytes transferred since last check
+    bytesSent := stats.BytesSent - b.lastStats.BytesSent
+    bytesRecv := stats.BytesReceived - b.lastStats.BytesReceived
+    
+    // Calculate bandwidth in bits per second
+    sendBW = float64(bytesSent) * 8 / elapsed
+    recvBW = float64(bytesRecv) * 8 / elapsed
+    
+    // Update for next calculation
+    b.lastStats = stats
+    b.lastCheckTime = time.Now()
+    
+    return sendBW, recvBW
+}
+
+// Usage
+estimator := &BandwidthEstimator{}
+ticker := time.NewTicker(2 * time.Second)
+for range ticker.C {
+    stats, ok := agent.GetSelectedCandidatePairStats()
+    if !ok {
+        continue
+    }
+    
+    sendBW, recvBW := estimator.Update(stats)
+    if sendBW > 0 {
+        fmt.Printf("Bandwidth - Send: %.2f kbps, Recv: %.2f kbps\n",
+            sendBW/1000, recvBW/1000)
+    }
+}
+```
+
+## Average RTT Calculation
+
+Calculate average RTT from total measurements:
+
+```go
+stats, ok := agent.GetSelectedCandidatePairStats()
+if !ok || stats.ResponsesReceived == 0 {
+    return
+}
+
+averageRTT := stats.TotalRoundTripTime / float64(stats.ResponsesReceived)
+fmt.Printf("Average RTT: %.3fs over %d measurements\n",
+    averageRTT, stats.ResponsesReceived)
+```
+
+## Connection Activity Tracking
+
+Detect idle connections or stalled traffic:
+
+```go
+func checkConnectionActivity(agent *ice.Agent, timeout time.Duration) bool {
+    stats, ok := agent.GetSelectedCandidatePairStats()
+    if !ok {
+        return false
+    }
+    
+    // Check when we last received data
+    lastActivity := stats.LastPacketReceivedTimestamp
+    if lastActivity.IsZero() {
+        lastActivity = stats.LastPacketSentTimestamp
+    }
+    
+    if time.Since(lastActivity) > timeout {
+        fmt.Println("Connection appears idle")
+        return false
+    }
+    
+    return true
+}
+
+// Usage
+if !checkConnectionActivity(agent, 30*time.Second) {
+    // Connection has been idle for 30+ seconds
+    // Consider reconnecting or alerting
+}
+```
+
+## Diagnostic Report
+
+Generate a comprehensive diagnostic report:
+
+```go
+func generateDiagnosticReport(agent *ice.Agent) {
+    fmt.Println("=== ICE Connection Diagnostic Report ===")
+    
+    // Selected pair
+    selectedStats, ok := agent.GetSelectedCandidatePairStats()
+    if ok {
+        fmt.Println("\nSelected Candidate Pair:")
+        fmt.Printf("  State: %s (Nominated: %v)\n", selectedStats.State, selectedStats.Nominated)
+        fmt.Printf("  Current RTT: %.3fs\n", selectedStats.CurrentRoundTripTime)
+        fmt.Printf("  Average RTT: %.3fs\n", 
+            selectedStats.TotalRoundTripTime/float64(selectedStats.ResponsesReceived))
+        fmt.Printf("  Packets: %d sent, %d received\n", 
+            selectedStats.PacketsSent, selectedStats.PacketsReceived)
+        fmt.Printf("  Bytes: %d sent, %d received\n",
+            selectedStats.BytesSent, selectedStats.BytesReceived)
+        fmt.Printf("  STUN: %d requests sent, %d responses received\n",
+            selectedStats.RequestsSent, selectedStats.ResponsesReceived)
+    }
+    
+    // All pairs
+    allPairs := agent.GetCandidatePairsStats()
+    fmt.Printf("\nTotal Candidate Pairs: %d\n", len(allPairs))
+    
+    stateCount := make(map[ice.CandidatePairState]int)
+    for _, pair := range allPairs {
+        stateCount[pair.State]++
+    }
+    
+    fmt.Println("Pair States:")
+    for state, count := range stateCount {
+        fmt.Printf("  %s: %d\n", state, count)
+    }
+    
+    // Local candidates
+    localCands := agent.GetLocalCandidatesStats()
+    fmt.Printf("\nLocal Candidates: %d\n", len(localCands))
+    typeCount := make(map[ice.CandidateType]int)
+    for _, cand := range localCands {
+        typeCount[cand.CandidateType]++
+    }
+    for candType, count := range typeCount {
+        fmt.Printf("  %s: %d\n", candType, count)
+    }
+    
+    // Remote candidates
+    remoteCands := agent.GetRemoteCandidatesStats()
+    fmt.Printf("\nRemote Candidates: %d\n", len(remoteCands))
+}
+```
+
+## Metrics Export
+
+Export statistics in structured format for monitoring systems:
+
+```go
+import "encoding/json"
+
+type MetricsSnapshot struct {
+    Timestamp      time.Time                    `json:"timestamp"`
+    SelectedPair   *ice.CandidatePairStats      `json:"selected_pair"`
+    AllPairs       []ice.CandidatePairStats     `json:"all_pairs"`
+    LocalCandidates []ice.CandidateStats        `json:"local_candidates"`
+    RemoteCandidates []ice.CandidateStats       `json:"remote_candidates"`
+}
+
+func exportMetrics(agent *ice.Agent) ([]byte, error) {
+    snapshot := MetricsSnapshot{
+        Timestamp:        time.Now(),
+        AllPairs:         agent.GetCandidatePairsStats(),
+        LocalCandidates:  agent.GetLocalCandidatesStats(),
+        RemoteCandidates: agent.GetRemoteCandidatesStats(),
+    }
+    
+    if stats, ok := agent.GetSelectedCandidatePairStats(); ok {
+        snapshot.SelectedPair = &stats
+    }
+    
+    return json.MarshalIndent(snapshot, "", "  ")
+}
+
+// Usage
+metrics, err := exportMetrics(agent)
+if err != nil {
+    return err
+}
+fmt.Println(string(metrics))
+```
+
+## STUN Request/Response Analysis
+
+Monitor connectivity check patterns:
+
+```go
+stats, ok := agent.GetSelectedCandidatePairStats()
+if !ok {
+    return
+}
+
+// Check if connectivity checks are working
+if stats.RequestsSent > 0 && stats.ResponsesReceived == 0 {
+    fmt.Println("WARNING: No STUN responses received")
+    fmt.Println("Possible causes:")
+    fmt.Println("  - Firewall blocking STUN traffic")
+    fmt.Println("  - Remote peer not responding")
+    fmt.Println("  - Network connectivity issues")
+}
+
+// Calculate response rate
+if stats.RequestsSent > 0 {
+    responseRate := float64(stats.ResponsesReceived) / float64(stats.RequestsSent) * 100
+    fmt.Printf("STUN response rate: %.2f%%\n", responseRate)
+    
+    if responseRate < 80.0 {
+        fmt.Println("WARNING: Low STUN response rate")
+    }
+}
+```
+
+## Thread Safety
+
+<Info>
+All statistics methods are thread-safe. They use the agent's internal event loop to safely access state, so you can call them from any goroutine without additional synchronization.
+</Info>
+
+```go agent_stats.go
+func (a *Agent) GetCandidatePairsStats() []CandidatePairStats {
+    var res []CandidatePairStats
+    err := a.loop.Run(a.loop, func(_ context.Context) {
+        // Safely access agent state within event loop
+        result := make([]CandidatePairStats, 0, len(a.checklist))
+        for _, cp := range a.checklist {
+            // Collect statistics
+        }
+        res = result
+    })
+    // ...
+}
+```
+
+## Best Practices
+
+<Accordion title="Polling Frequency">
+  Balance between visibility and performance:
+  
+  - **Selected pair monitoring**: Every 1-5 seconds for connection quality
+  - **All pairs**: Every 10-30 seconds for detailed analysis
+  - **Candidates**: Once per gathering phase or on demand
+  
+  Avoid polling faster than 1 Hz unless absolutely necessary.
+</Accordion>
+
+<Accordion title="Memory Considerations">
+  Statistics methods return copies of data, not references:
+  
+  ```go
+  // Each call allocates new slice and structs
+  stats := agent.GetCandidatePairsStats()
+  ```
+  
+  For high-frequency monitoring, reuse buffers or limit scope:
+  ```go
+  // Only get what you need
+  stats, ok := agent.GetSelectedCandidatePairStats()
+  ```
+</Accordion>
+
+<Accordion title="Interpreting RTT Values">
+  - **CurrentRoundTripTime**: Latest measurement, subject to variance
+  - **TotalRoundTripTime / ResponsesReceived**: Average, more stable
+  
+  Use moving averages or percentiles for decision-making:
+  ```go
+  // Track last N measurements for percentile calculation
+  type RTTTracker struct {
+      measurements []float64
+      maxSize      int
+  }
+  ```
+</Accordion>
+
+<Accordion title="Detecting Network Changes">
+  Monitor for patterns indicating network issues:
+  
+  - Sudden RTT increase (>2x previous)
+  - Zero packets received for >10 seconds
+  - STUN response rate drops below 50%
+  - Bytes sent/received stops incrementing
+  
+  Trigger reconnection or renomination based on thresholds.
+</Accordion>
+
+## Reference
+
+- **Candidate Pair Stats**: `stats.go:10` - CandidatePairStats type definition
+- **Candidate Stats**: `stats.go:170` - CandidateStats type definition
+- **Agent Methods**: `agent_stats.go:12` - GetCandidatePairsStats, GetSelectedCandidatePairStats
+- **Pair Info**: `stats.go:143` - CandidatePairInfo for renomination

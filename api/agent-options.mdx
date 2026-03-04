@@ -1,0 +1,478 @@
+---
+title: 'Agent Options'
+description: 'Functional options for configuring ICE Agents'
+---
+
+## Overview
+
+Agent options provide a flexible, forward-compatible way to configure ICE agents using the functional options pattern. Each option is a function that modifies agent configuration.
+
+## Type Definition
+
+```go
+type AgentOption func(*Agent) error
+```
+
+## Network Configuration
+
+### WithUrls
+
+```go
+func WithUrls(urls []*stun.URI) AgentOption
+```
+
+Sets the STUN/TURN server URLs. Can be updated at runtime via `UpdateOptions`.
+
+<CodeGroup>
+```go STUN Server
+stunURL, _ := stun.ParseURI("stun:stun.l.google.com:19302")
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{stunURL}),
+)
+```
+
+```go TURN Server
+turnURL, _ := stun.ParseURI("turn:turn.example.com:3478?transport=udp")
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithUrls([]*stun.URI{turnURL}),
+)
+```
+</CodeGroup>
+
+### WithPortRange
+
+```go
+func WithPortRange(portMin, portMax uint16) AgentOption
+```
+
+Sets the UDP port range for host candidates. Use 0 for both to let the OS choose ports.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithPortRange(10000, 20000),
+)
+```
+
+### WithNetworkTypes
+
+```go
+func WithNetworkTypes(networkTypes []NetworkType) AgentOption
+```
+
+Enables specific network types. See [NetworkType](/api/network-types).
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{
+        ice.NetworkTypeUDP4,
+        ice.NetworkTypeUDP6,
+    }),
+)
+```
+
+### WithCandidateTypes
+
+```go
+func WithCandidateTypes(candidateTypes []CandidateType) AgentOption
+```
+
+Enables specific candidate types. See [CandidateType](/api/candidate-type-enum).
+
+```go
+// Only gather host candidates
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+    }),
+)
+```
+
+## Timeout Configuration
+
+### WithDisconnectedTimeout
+
+```go
+func WithDisconnectedTimeout(timeout time.Duration) AgentOption
+```
+
+Sets duration before transitioning to disconnected state. Use 0 to disable.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithDisconnectedTimeout(10 * time.Second),
+)
+```
+
+### WithFailedTimeout
+
+```go
+func WithFailedTimeout(timeout time.Duration) AgentOption
+```
+
+Sets duration after disconnected before transitioning to failed. Use 0 to disable.
+
+### WithKeepaliveInterval
+
+```go
+func WithKeepaliveInterval(interval time.Duration) AgentOption
+```
+
+Sets how often to send keepalive packets. Use 0 to disable.
+
+### WithCheckInterval
+
+```go
+func WithCheckInterval(interval time.Duration) AgentOption
+```
+
+Sets how often to run connectivity checks while connecting.
+
+### WithSTUNGatherTimeout
+
+```go
+func WithSTUNGatherTimeout(timeout time.Duration) AgentOption
+```
+
+Sets STUN server response timeout during gathering.
+
+## Candidate Acceptance Timing
+
+### WithHostAcceptanceMinWait
+
+```go
+func WithHostAcceptanceMinWait(wait time.Duration) AgentOption
+```
+
+Minimum wait before selecting host candidates (default: 0).
+
+### WithSrflxAcceptanceMinWait
+
+```go
+func WithSrflxAcceptanceMinWait(wait time.Duration) AgentOption
+```
+
+Minimum wait before selecting server reflexive candidates (default: 500ms).
+
+### WithPrflxAcceptanceMinWait
+
+```go
+func WithPrflxAcceptanceMinWait(wait time.Duration) AgentOption
+```
+
+Minimum wait before selecting peer reflexive candidates (default: 1s).
+
+### WithRelayAcceptanceMinWait
+
+```go
+func WithRelayAcceptanceMinWait(wait time.Duration) AgentOption
+```
+
+Minimum wait before selecting relay candidates (default: 2s).
+
+## Address Rewriting
+
+### WithAddressRewriteRules
+
+```go
+func WithAddressRewriteRules(rules ...AddressRewriteRule) AgentOption
+```
+
+Adds address rewrite rules for 1:1 NAT mapping. See [AddressRewriteRule](/api/address-rewrite).
+
+<CodeGroup>
+```go Simple NAT
+// Replace local address with public IP
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Local:    "192.168.1.100",
+        },
+    ),
+)
+```
+
+```go Multiple Rules
+// Different mappings per interface
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithAddressRewriteRules(
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.10"},
+            Iface:    "eth0",
+        },
+        ice.AddressRewriteRule{
+            External: []string{"203.0.113.20"},
+            Iface:    "eth1",
+        },
+    ),
+)
+```
+</CodeGroup>
+
+## ICE Configuration
+
+### WithICELite
+
+```go
+func WithICELite(lite bool) AgentOption
+```
+
+Enables ICE-lite mode. Lite agents only gather host candidates.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithICELite(true),
+)
+```
+
+### WithMaxBindingRequests
+
+```go
+func WithMaxBindingRequests(limit uint16) AgentOption
+```
+
+Sets maximum binding requests before marking a pair as failed (default: 7).
+
+### WithEnableUseCandidateCheckPriority
+
+```go
+func WithEnableUseCandidateCheckPriority() AgentOption
+```
+
+For lite agents, checks priority before switching pairs on USE-CANDIDATE.
+
+## Multicast DNS
+
+### WithMulticastDNSMode
+
+```go
+func WithMulticastDNSMode(mode MulticastDNSMode) AgentOption
+```
+
+Configures mDNS behavior.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithMulticastDNSMode(ice.MulticastDNSModeQueryAndGather),
+)
+```
+
+### WithMulticastDNSHostName
+
+```go
+func WithMulticastDNSHostName(hostName string) AgentOption
+```
+
+Sets mDNS hostname (must end with ".local").
+
+## Credentials
+
+### WithLocalCredentials
+
+```go
+func WithLocalCredentials(ufrag, pwd string) AgentOption
+```
+
+Sets local ICE credentials. Empty strings trigger auto-generation.
+
+<Note>
+Credentials must meet minimum entropy: ufrag >= 24 bits, pwd >= 128 bits.
+</Note>
+
+## Renomination
+
+### WithRenomination
+
+```go
+func WithRenomination(generator NominationValueGenerator) AgentOption
+```
+
+Enables ICE renomination (draft-thatcher-ice-renomination-01).
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+)
+```
+
+### WithNominationAttribute
+
+```go
+func WithNominationAttribute(attrType uint16) AgentOption
+```
+
+Sets the STUN attribute type for renomination (default: 0x0030).
+
+### WithAutomaticRenomination
+
+```go
+func WithAutomaticRenomination(interval time.Duration) AgentOption
+```
+
+Enables automatic renomination when better pairs become available.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithRenomination(ice.DefaultNominationValueGenerator()),
+    ice.WithAutomaticRenomination(3 * time.Second),
+)
+```
+
+## Continual Gathering
+
+### WithContinualGatheringPolicy
+
+```go
+func WithContinualGatheringPolicy(policy ContinualGatheringPolicy) AgentOption
+```
+
+Sets continual gathering behavior.
+
+```go
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithContinualGatheringPolicy(ice.GatherContinually),
+)
+```
+
+### WithNetworkMonitorInterval
+
+```go
+func WithNetworkMonitorInterval(interval time.Duration) AgentOption
+```
+
+Sets network interface monitoring interval (requires GatherContinually).
+
+## TCP Configuration
+
+### WithTCPPriorityOffset
+
+```go
+func WithTCPPriorityOffset(offset uint16) AgentOption
+```
+
+Value subtracted from TCP candidate priorities (default: 27).
+
+### WithDisableActiveTCP
+
+```go
+func WithDisableActiveTCP() AgentOption
+```
+
+Disables active TCP candidate creation.
+
+## Multiplexing
+
+### WithTCPMux
+
+```go
+func WithTCPMux(tcpMux TCPMux) AgentOption
+```
+
+Sets TCP multiplexer for ICE-TCP.
+
+### WithUDPMux
+
+```go
+func WithUDPMux(udpMux UDPMux) AgentOption
+```
+
+Sets UDP multiplexer for host candidates.
+
+### WithUDPMuxSrflx
+
+```go
+func WithUDPMuxSrflx(udpMuxSrflx UniversalUDPMux) AgentOption
+```
+
+Sets UDP multiplexer for server reflexive candidates.
+
+## Filtering
+
+### WithInterfaceFilter
+
+```go
+func WithInterfaceFilter(filter func(string) bool) AgentOption
+```
+
+Filters network interfaces by name.
+
+```go
+// Only use "eth" interfaces
+agent, _ := ice.NewAgentWithOptions(
+    ice.WithInterfaceFilter(func(name string) bool {
+        return strings.HasPrefix(name, "eth")
+    }),
+)
+```
+
+### WithIPFilter
+
+```go
+func WithIPFilter(filter func(net.IP) bool) AgentOption
+```
+
+Filters IP addresses during gathering.
+
+### WithIncludeLoopback
+
+```go
+func WithIncludeLoopback() AgentOption
+```
+
+Includes loopback addresses in candidates.
+
+## Advanced Options
+
+### WithNet
+
+```go
+func WithNet(net transport.Net) AgentOption
+```
+
+Sets custom network implementation (testing/virtual networks).
+
+### WithProxyDialer
+
+```go
+func WithProxyDialer(dialer proxy.Dialer) AgentOption
+```
+
+Sets proxy dialer for TURN connections.
+
+### WithBindingRequestHandler
+
+```go
+func WithBindingRequestHandler(
+    handler func(m *stun.Message, local, remote Candidate, pair *CandidatePair) bool,
+) AgentOption
+```
+
+Sets custom STUN binding request handler.
+
+### WithLoggerFactory
+
+```go
+func WithLoggerFactory(loggerFactory logging.LoggerFactory) AgentOption
+```
+
+Sets logger factory for structured logging.
+
+## Helper Functions
+
+### DefaultNominationValueGenerator
+
+```go
+func DefaultNominationValueGenerator() NominationValueGenerator
+```
+
+Returns a generator that produces incrementing nomination values starting at 1.
+
+```go
+type NominationValueGenerator func() uint32
+```
+
+## Related
+
+- [Agent](/api/agent) - Main ICE Agent type
+- [AgentConfig](/api/agent-config) - Legacy configuration struct
+- [AddressRewriteRule](/api/address-rewrite) - NAT mapping rules

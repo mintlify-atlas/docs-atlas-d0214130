@@ -1,0 +1,246 @@
+---
+title: "Host Candidates"
+description: "Create and configure host candidates for direct peer connections in Pion ICE"
+---
+
+## Overview
+
+Host candidates represent direct network interfaces on the local machine. They are the most preferred type of candidate because they enable direct peer-to-peer communication without intermediary servers.
+
+## CandidateHost
+
+A host candidate is obtained directly from a local network interface.
+
+```go candidate_host.go
+type CandidateHost struct {
+    candidateBase
+    network string
+}
+```
+
+Host candidates embed `candidateBase` which provides common candidate functionality including priority calculation, marshaling, and traffic tracking.
+
+## Creating Host Candidates
+
+### NewCandidateHost
+
+Creates a new host candidate from the provided configuration.
+
+```go
+func NewCandidateHost(config *CandidateHostConfig) (*CandidateHost, error)
+```
+
+<ParamField path="config" type="*CandidateHostConfig" required>
+  Configuration for the host candidate.
+</ParamField>
+
+Returns the created `CandidateHost` or an error if the configuration is invalid.
+
+## CandidateHostConfig
+
+Configuration structure for creating host candidates.
+
+```go candidate_host.go
+type CandidateHostConfig struct {
+    CandidateID       string
+    Network           string
+    Address           string
+    Port              int
+    Component         uint16
+    Priority          uint32
+    Foundation        string
+    TCPType           TCPType
+    IsLocationTracked bool
+}
+```
+
+### Configuration Fields
+
+<ParamField path="CandidateID" type="string">
+  Unique identifier for the candidate. If empty, a UUID will be automatically generated.
+</ParamField>
+
+<ParamField path="Network" type="string" required>
+  Network protocol: "udp", "tcp", "udp4", "udp6", "tcp4", or "tcp6".
+</ParamField>
+
+<ParamField path="Address" type="string" required>
+  IP address of the local interface. Can be an IPv4 address, IPv6 address, or mDNS name ending in ".local" or ".invalid".
+</ParamField>
+
+<ParamField path="Port" type="int" required>
+  Port number for the candidate.
+</ParamField>
+
+<ParamField path="Component" type="uint16" required>
+  Component identifier. Use `ComponentRTP` (1) for RTP or `ComponentRTCP` (2) for RTCP.
+</ParamField>
+
+<ParamField path="Priority" type="uint32">
+  Custom priority value. If 0, priority will be calculated automatically according to RFC 8445.
+</ParamField>
+
+<ParamField path="Foundation" type="string">
+  Custom foundation string. If empty, foundation will be calculated as a CRC32 checksum of the candidate type, address, and network type.
+</ParamField>
+
+<ParamField path="TCPType" type="TCPType">
+  For TCP candidates, specifies the TCP type: `TCPTypeActive`, `TCPTypePassive`, or `TCPTypeSimultaneousOpen`. Use `TCPTypeUnspecified` for UDP candidates.
+</ParamField>
+
+<ParamField path="IsLocationTracked" type="bool">
+  Whether this candidate should be filtered for location tracking purposes.
+</ParamField>
+
+## Examples
+
+### Creating a UDP Host Candidate
+
+```go
+candidate, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "udp",
+    Address:   "192.168.1.100",
+    Port:      50000,
+    Component: ice.ComponentRTP,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+// Output: candidate:842163049 1 udp 2130706431 192.168.1.100 50000 typ host
+```
+
+### Creating a TCP Host Candidate
+
+```go
+candidate, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "tcp",
+    Address:   "192.168.1.100",
+    Port:      50000,
+    Component: ice.ComponentRTP,
+    TCPType:   ice.TCPTypePassive,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+```
+
+### Creating an IPv6 Host Candidate
+
+```go
+candidate, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "udp6",
+    Address:   "fe80::1",
+    Port:      50000,
+    Component: ice.ComponentRTP,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+### Creating an mDNS Host Candidate
+
+```go
+candidate, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "udp",
+    Address:   "device.local",
+    Port:      50000,
+    Component: ice.ComponentRTP,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Println("Candidate:", candidate.Marshal())
+```
+
+<Note>
+mDNS candidates (addresses ending in ".local" or ".invalid") are not immediately resolved. The network type is assumed to be UDP4 until the address is resolved.
+</Note>
+
+## When to Use Host Candidates
+
+Host candidates should be used when:
+
+- Establishing direct peer-to-peer connections
+- Both peers are on the same local network
+- NAT traversal is not required
+- Minimizing latency is a priority
+- Privacy is important (no third-party servers involved)
+
+### Priority
+
+Host candidates have the highest type preference (126) among all candidate types, making them the most preferred for connection establishment. The full priority calculation is:
+
+```
+priority = (2^24 * 126) + (2^8 * local-preference) + (256 - component)
+```
+
+For single-homed hosts, local preference is typically set to 65535.
+
+## TCP Type
+
+For TCP host candidates, the `TCPType` field specifies the connection behavior:
+
+<ResponseField name="TCPTypeActive" type="TCPType">
+  The candidate initiates TCP connections (acts as a client).
+</ResponseField>
+
+<ResponseField name="TCPTypePassive" type="TCPType">
+  The candidate only accepts TCP connections (acts as a server).
+</ResponseField>
+
+<ResponseField name="TCPTypeSimultaneousOpen" type="TCPType">
+  The candidate can both initiate and accept connections simultaneously.
+</ResponseField>
+
+## Related Address
+
+Host candidates do not have a related address, as they represent the actual local interface. The `RelatedAddress()` method returns `nil` for host candidates.
+
+## Common Use Cases
+
+### Local Network Communication
+
+Host candidates are ideal for applications where peers are on the same LAN:
+
+```go
+// Create host candidate for local network interface
+candidate, _ := ice.NewCandidateHost(&ice.CandidateHostConfig{
+    Network:   "udp",
+    Address:   "192.168.1.100",
+    Port:      50000,
+    Component: ice.ComponentRTP,
+})
+```
+
+### Multi-homed Systems
+
+For systems with multiple network interfaces, create a host candidate for each:
+
+```go
+interfaces := []string{"192.168.1.100", "10.0.0.5"}
+
+for _, addr := range interfaces {
+    candidate, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+        Network:   "udp",
+        Address:   addr,
+        Port:      50000,
+        Component: ice.ComponentRTP,
+    })
+    if err != nil {
+        continue
+    }
+    // Add candidate to ICE agent
+}
+```
+
+## See Also
+
+- [Candidate Types](/api/candidate-types) - Core candidate interfaces and types
+- [Server Reflexive Candidates](/api/candidate-server-reflexive) - For NAT traversal
+- [Relay Candidates](/api/candidate-relay) - For restrictive network environments

@@ -1,0 +1,387 @@
+---
+title: Candidate Gathering
+description: Understanding the ICE candidate gathering process
+---
+
+ICE candidate gathering is the process of discovering and collecting local network addresses that can be used for peer-to-peer communication. This guide covers how gathering works, the different gathering modes, and how to handle candidates.
+
+## Starting Candidate Gathering
+
+To begin gathering candidates, call `GatherCandidates()` after creating an agent:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4}),
+)
+if err != nil {
+    panic(err)
+}
+
+// Set candidate handler first
+err = agent.OnCandidate(func(c ice.Candidate) {
+    if c == nil {
+        fmt.Println("Gathering complete")
+        return
+    }
+    fmt.Printf("New candidate: %s\n", c)
+})
+
+// Start gathering
+err = agent.GatherCandidates()
+if err != nil {
+    panic(err)
+}
+```
+
+<Warning>
+You must set the `OnCandidate` handler before calling `GatherCandidates()`, otherwise the agent will return `ErrNoOnCandidateHandler`.
+</Warning>
+
+## Candidate Types
+
+The ICE agent can gather three types of candidates:
+
+<Steps>
+  <Step title="Host Candidates">
+    Local network addresses discovered from your network interfaces. These are gathered by enumerating network interfaces and binding to local ports.
+    
+    ```go
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeHost,
+    })
+    ```
+  </Step>
+  
+  <Step title="Server Reflexive Candidates">
+    Public addresses discovered by sending STUN binding requests to STUN servers. The server returns your public IP and port as seen from the internet.
+    
+    ```go
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeServerReflexive,
+    })
+    ```
+  </Step>
+  
+  <Step title="Relay Candidates">
+    Relayed addresses obtained from TURN servers. All traffic flows through the TURN server, ensuring connectivity even through restrictive NATs.
+    
+    ```go
+    ice.WithCandidateTypes([]ice.CandidateType{
+        ice.CandidateTypeRelay,
+    })
+    ```
+  </Step>
+</Steps>
+
+## Gathering Process
+
+The gathering process runs concurrently for all candidate types:
+
+```go
+// From gather.go:196
+func (a *Agent) gatherCandidatesInternal(ctx context.Context) {
+    var wg sync.WaitGroup
+    for _, t := range a.candidateTypes {
+        switch t {
+        case CandidateTypeHost:
+            wg.Add(1)
+            go func() {
+                a.gatherCandidatesLocal(ctx, a.networkTypes)
+                wg.Done()
+            }()
+        case CandidateTypeServerReflexive:
+            a.gatherServerReflexiveCandidates(ctx, &wg)
+        case CandidateTypeRelay:
+            wg.Add(1)
+            go func() {
+                a.gatherCandidatesRelay(ctx, a.urls)
+                wg.Done()
+            }()
+        }
+    }
+    wg.Wait()
+}
+```
+
+### Host Candidate Gathering
+
+Host candidates are gathered by:
+
+1. Enumerating network interfaces
+2. Filtering based on interface and IP filters
+3. Binding UDP/TCP sockets to local ports
+4. Creating candidate objects with priority calculations
+
+```go
+// Gather only from specific interfaces
+agent, err := ice.NewAgentWithOptions(
+    ice.WithInterfaceFilter(func(name string) bool {
+        return strings.HasPrefix(name, "eth")
+    }),
+)
+```
+
+### Server Reflexive Gathering
+
+Server reflexive candidates are discovered by:
+
+1. Binding local UDP sockets
+2. Sending STUN binding requests to configured STUN servers
+3. Receiving XOR-MAPPED-ADDRESS responses
+4. Creating srflx candidates with the public address
+
+```go
+urls := []*stun.URI{
+    {Scheme: stun.SchemeTypeSTUN, Host: "stun.l.google.com", Port: 19302},
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(urls),
+    ice.WithSTUNGatherTimeout(5 * time.Second),
+)
+```
+
+### Relay Candidate Gathering
+
+Relay candidates are obtained by:
+
+1. Connecting to TURN servers via UDP, TCP, TLS, or DTLS
+2. Performing TURN allocation
+3. Receiving relayed transport address
+4. Creating relay candidates
+
+```go
+urnURLs := []*stun.URI{
+    {Scheme: stun.SchemeTypeTURN, Host: "turn.example.com", Port: 3478,
+     Username: "user", Password: "pass"},
+}
+
+agent, err := ice.NewAgentWithOptions(
+    ice.WithUrls(turnURLs),
+)
+```
+
+## Gathering States
+
+The gathering process transitions through three states:
+
+1. **New** - Initial state before gathering starts
+2. **Gathering** - Actively gathering candidates
+3. **Complete** - All gathering finished (in GatherOnce mode)
+
+```go
+state, err := agent.GetGatheringState()
+fmt.Printf("Gathering state: %s\n", state)
+```
+
+## Continual vs Single Gathering
+
+Pion ICE supports two gathering policies:
+
+### GatherOnce (Default)
+
+Gathering completes after the initial collection:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithContinualGatheringPolicy(ice.GatherOnce),
+)
+```
+
+The `OnCandidate` handler receives a `nil` candidate when gathering completes.
+
+### GatherContinually
+
+Continuously monitors network interfaces and gathers new candidates as they appear:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithContinualGatheringPolicy(ice.GatherContinually),
+    ice.WithNetworkMonitorInterval(2 * time.Second),
+)
+```
+
+<Info>
+Continual gathering is useful for mobile applications where network interfaces change frequently (switching between WiFi and cellular).
+</Info>
+
+### Network Monitoring
+
+With continual gathering, the agent periodically checks for network changes:
+
+```go
+// From gather.go:1206
+func (a *Agent) startNetworkMonitoring(ctx context.Context) {
+    ticker := time.NewTicker(a.networkMonitorInterval)
+    defer ticker.Stop()
+    
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            if a.detectNetworkChanges() {
+                a.gatherCandidatesInternal(ctx)
+            }
+        }
+    }
+}
+```
+
+## mDNS Candidates
+
+For local network privacy, ICE can use mDNS hostnames instead of IP addresses:
+
+```go
+agent, err := ice.NewAgentWithOptions(
+    ice.WithMulticastDNSMode(ice.MulticastDNSModeQueryAndGather),
+    ice.WithMulticastDNSHostName("device.local"),
+)
+```
+
+### Multicast DNS Modes
+
+- `MulticastDNSModeDisabled` - No mDNS support (default)
+- `MulticastDNSModeQueryOnly` - Resolve mDNS candidates from remote peer
+- `MulticastDNSModeQueryAndGather` - Gather and resolve mDNS candidates
+
+<Note>
+When using `MulticastDNSModeQueryAndGather`, host candidates will advertise `.local` hostnames instead of IP addresses, hiding location-tracking information.
+</Note>
+
+## Handling Candidates
+
+The `OnCandidate` handler is called for each discovered candidate:
+
+```go
+var candidates []ice.Candidate
+
+err = agent.OnCandidate(func(c ice.Candidate) {
+    if c == nil {
+        // Gathering complete (in GatherOnce mode)
+        fmt.Printf("Gathered %d candidates\n", len(candidates))
+        return
+    }
+    
+    // New candidate discovered
+    candidates = append(candidates, c)
+    
+    // Send to remote peer via signaling
+    sendToRemote(c.Marshal())
+})
+```
+
+## Location Tracking Prevention
+
+ICE automatically filters certain candidates to prevent location tracking:
+
+```go
+// From gather.go:432
+func shouldFilterLocationTrackedIP(candidateIP netip.Addr) bool {
+    // IPv6 link-local addresses are filtered when using privacy-preserving
+    // address generation (RFC 8445 Section 5.1.1.1)
+    return candidateIP.Is6() && 
+           (candidateIP.IsLinkLocalUnicast() || candidateIP.IsLinkLocalMulticast())
+}
+```
+
+Link-local IPv6 addresses are filtered when gathering candidates that use privacy mechanisms.
+
+## Example: Continual Gathering
+
+Here's a complete example demonstrating continual gathering:
+
+```go
+import (
+    "context"
+    "fmt"
+    "time"
+    "github.com/pion/ice/v4"
+)
+
+func main() {
+    agent, err := ice.NewAgentWithOptions(
+        ice.WithNetworkTypes([]ice.NetworkType{
+            ice.NetworkTypeUDP4,
+            ice.NetworkTypeUDP6,
+        }),
+        ice.WithCandidateTypes([]ice.CandidateType{
+            ice.CandidateTypeHost,
+        }),
+        ice.WithContinualGatheringPolicy(ice.GatherContinually),
+        ice.WithNetworkMonitorInterval(2 * time.Second),
+    )
+    if err != nil {
+        panic(err)
+    }
+    defer agent.Close()
+    
+    // Track candidates
+    candidateCount := 0
+    err = agent.OnCandidate(func(c ice.Candidate) {
+        if c == nil {
+            return // No completion signal in continual mode
+        }
+        candidateCount++
+        fmt.Printf("[%d] %s\n", candidateCount, c)
+    })
+    if err != nil {
+        panic(err)
+    }
+    
+    // Start gathering
+    err = agent.GatherCandidates()
+    if err != nil {
+        panic(err)
+    }
+    
+    // Monitor gathering state
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    
+    for {
+        <-ticker.C
+        state, _ := agent.GetGatheringState()
+        candidates, _ := agent.GetLocalCandidates()
+        fmt.Printf("State: %s, Candidates: %d\n", state, len(candidates))
+    }
+}
+```
+
+## Troubleshooting
+
+### No Candidates Gathered
+
+- Verify network types are enabled: `WithNetworkTypes()`
+- Check interface filters aren't too restrictive
+- Enable debug logging to see why interfaces are skipped
+
+### STUN/TURN Failures
+
+- Verify server URLs are correct
+- Check firewall allows UDP/TCP to STUN/TURN ports
+- Increase STUN gather timeout: `WithSTUNGatherTimeout(10 * time.Second)`
+- Check TURN credentials are valid
+
+### Gathering Never Completes
+
+- Ensure `OnCandidate` handler is set before `GatherCandidates()`
+- Check for network connectivity issues
+- Review logs for errors during gathering
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connectivity Checks" icon="check" href="./connectivity-checks">
+    Learn how ICE performs connectivity checks between candidates
+  </Card>
+  <Card title="NAT Traversal" icon="route" href="./nat-traversal">
+    Configure address rewriting for NAT traversal
+  </Card>
+  <Card title="Multiplexing" icon="network-wired" href="./multiplexing">
+    Share UDP/TCP ports across multiple ICE sessions
+  </Card>
+  <Card title="Examples" icon="code" href="./examples">
+    See gathering examples in action
+  </Card>
+</CardGroup>
