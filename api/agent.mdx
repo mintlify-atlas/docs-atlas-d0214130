@@ -148,6 +148,86 @@ func (a *Agent) GetLocalUserCredentials() (frag string, pwd string, err error)
 
 Returns the local ICE credentials (username fragment and password).
 
+### GetRemoteUserCredentials
+
+```go
+func (a *Agent) GetRemoteUserCredentials() (frag string, pwd string, err error)
+```
+
+Returns the remote ICE credentials that have been set via `SetRemoteCredentials`.
+
+### GetRemoteCandidates
+
+```go
+func (a *Agent) GetRemoteCandidates() ([]Candidate, error)
+```
+
+Returns all remote candidates that have been added to the agent.
+
+### Dial
+
+```go
+func (a *Agent) Dial(ctx context.Context, remoteUfrag, remotePwd string) (*Conn, error)
+```
+
+Connects to the remote agent in controlling mode. Returns a `Conn` that can be used to send and receive data.
+
+**Parameters:**
+
+<ParamField path="ctx" type="context.Context">
+  Context for controlling the dial operation lifetime.
+</ParamField>
+
+<ParamField path="remoteUfrag" type="string">
+  Remote username fragment (from remote agent's GetLocalUserCredentials).
+</ParamField>
+
+<ParamField path="remotePwd" type="string">
+  Remote password (from remote agent's GetLocalUserCredentials).
+</ParamField>
+
+**Returns:** `(*Conn, error)` - Connection for data transfer
+
+**Example:**
+
+```go
+localUfrag, localPwd, _ := agent.GetLocalUserCredentials()
+// Exchange credentials with peer (out of band)
+
+conn, err := agent.Dial(context.Background(), remoteUfrag, remotePwd)
+if err != nil {
+    panic(err)
+}
+defer conn.Close()
+
+// Use conn for data transfer
+_, err = conn.Write([]byte("Hello"))
+```
+
+### Accept
+
+```go
+func (a *Agent) Accept(ctx context.Context, remoteUfrag, remotePwd string) (*Conn, error)
+```
+
+Waits for connection from the remote agent in controlled mode. Returns a `Conn` that can be used to send and receive data.
+
+**Parameters:**
+
+<ParamField path="ctx" type="context.Context">
+  Context for controlling the accept operation lifetime.
+</ParamField>
+
+<ParamField path="remoteUfrag" type="string">
+  Remote username fragment (from remote agent's GetLocalUserCredentials).
+</ParamField>
+
+<ParamField path="remotePwd" type="string">
+  Remote password (from remote agent's GetLocalUserCredentials).
+</ParamField>
+
+**Returns:** `(*Conn, error)` - Connection for data transfer
+
 ### Restart
 
 ```go
