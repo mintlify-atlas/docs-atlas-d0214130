@@ -1,0 +1,149 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Pion ICE",
+  "projectDescription": "A Go implementation of Interactive Connectivity Establishment (ICE) for peer-to-peer networking and NAT traversal",
+  "theme": "aspen",
+  "primaryColor": "#e23d37",
+  "lightColor": "#dd989c",
+  "darkColor": "#ffffff",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/ice-protocol",
+              "concepts/agents",
+              "concepts/candidates",
+              "concepts/connectivity"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/configuration",
+              "guides/gathering",
+              "guides/connectivity-checks",
+              "guides/multiplexing",
+              "guides/nat-traversal",
+              "guides/examples"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/tcp-support",
+              "advanced/mdns",
+              "advanced/renomination",
+              "advanced/statistics"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Agent",
+            "pages": [
+              "api/agent",
+              "api/agent-config",
+              "api/agent-options"
+            ]
+          },
+          {
+            "group": "Candidates",
+            "pages": [
+              "api/candidate-types",
+              "api/candidate-host",
+              "api/candidate-relay",
+              "api/candidate-server-reflexive",
+              "api/candidate-peer-reflexive"
+            ]
+          },
+          {
+            "group": "Multiplexing",
+            "pages": [
+              "api/udp-mux",
+              "api/tcp-mux",
+              "api/universal-mux"
+            ]
+          },
+          {
+            "group": "Types & Enums",
+            "pages": [
+              "api/connection-state",
+              "api/gathering-state",
+              "api/network-types",
+              "api/candidate-type-enum"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/url-parsing",
+              "api/address-rewrite"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Full RFC 5245 ICE protocol implementation",
+    "Support for UDP and TCP candidates",
+    "STUN and TURN server integration",
+    "NAT traversal with multiple candidate types",
+    "Connection multiplexing (UDPMux, TCPMux)",
+    "mDNS support for local network discovery",
+    "Configurable gathering and connectivity policies",
+    "Automatic and continual candidate gathering",
+    "Renomination support for connection migration",
+    "Comprehensive statistics and monitoring"
+  ],
+  "publicApiSurface": [
+    "Agent",
+    "NewAgent",
+    "NewAgentWithOptions",
+    "AgentConfig",
+    "AgentOption",
+    "Candidate",
+    "CandidateHost",
+    "CandidateRelay",
+    "CandidateServerReflexive",
+    "CandidatePeerReflexive",
+    "NewCandidateHost",
+    "NewCandidateRelay",
+    "NewCandidateServerReflexive",
+    "NewCandidatePeerReflexive",
+    "CandidateType",
+    "CandidatePair",
+    "ConnectionState",
+    "GatheringState",
+    "NetworkType",
+    "TCPType",
+    "UDPMux",
+    "TCPMux",
+    "UniversalUDPMux",
+    "NewUDPMuxDefault",
+    "NewTCPMuxDefault",
+    "NewUniversalUDPMuxDefault",
+    "MulticastDNSMode",
+    "WithUrls",
+    "WithPortFilter",
+    "WithNetworkTypes",
+    "WithCandidateTypes",
+    "WithMulticastDNS",
+    "WithAddressRewriteRules"
+  ]
+}
